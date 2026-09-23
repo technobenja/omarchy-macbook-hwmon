@@ -263,3 +263,105 @@ hwmon/
 ├── install.sh
 └── README.md
 ```
+
+---
+
+# v3 delta — 2026-09-23 (fan/battery findings)
+
+Scope approved by Ben 2026-09-23: items 1–6 of the post-mbpfan review. Item 7
+(power profile on the System page) **REMOVED — `omarchy.power` already shows
+it** (Ben). Background, measured today: the SMC never raised the fan above
+~1320 RPM at 40–87 °C; a manual 4000 RPM override reached 4259 RPM (fan
+hardware good); `mbpfan` 2.4.0 now controls the fan (`fan1_manual=1`,
+`/run/mbpfan.pid`); the 09:36 battery death was a hard power-off (dirty FAT
+fsck + journald "uncleanly shut down" on the next boot) with UPower's 2 %
+action blocked, most likely by `block`-mode sleep inhibitors.
+
+**Contract:** `schema` becomes **2**. `tests/fixtures/latest.example.json` is
+updated first (schema 2) and both halves test against it, as in v2. The widget
+treats any schema other than 2 as not-live (existing A9 rule), so collector and
+widget ship together; `install.sh` restarts `hwmon.service` on update, and the
+README's `omarchy restart shell` note applies.
+
+## ADDED
+
+**A13 — Sleep-block guard (item 1).** Snapshot key `power_guard`:
+`{sleep_blocked: bool|null, blockers: [{who: str, why: str}]}`. Source:
+logind `ListInhibitors` via `busctl --system call org.freedesktop.login1
+/org/freedesktop/login1 org.freedesktop.login1.Manager ListInhibitors`
+(no root; measured). **Only entries whose `what` contains `sleep` AND whose
+mode is `block` count** — `delay` inhibitors are always present and harmless
+(measured: NetworkManager, UPower, Omarchy lock-screen, all `delay`). Queried
+at most every 10 s (cached between ticks); failure → `null`, never a crash.
+Widget: **critical** when `battery.pct ≤ 10` AND `status == Discharging` AND
+`sleep_blocked == true`; the popup shows a banner naming each blocker
+(`who — why`). Threshold lives in Thresholds.js.
+
+**A14 — Fan control + target (item 2).** New keys `fan.target_rpm` (int,
+`fan1_output`) and `fan.control` (str): `"smc"` if `fan1_manual == 0`;
+`"mbpfan"` if `fan1_manual == 1` and `/run/mbpfan.pid` names a live process
+whose `/proc/<pid>/comm` is `mbpfan`; otherwise `"manual"`; `null` if
+unreadable. Popup replaces the `manual yes/no` row with `Control: SMC auto |
+mbpfan | manual` and shows `target N rpm` next to actual.
+
+**A15 — Throttle tracking (item 5).** New key `cpu.throttle`:
+`{core_count: int, package_count: int, recent: bool}` — counts summed over
+`/sys/devices/system/cpu/cpu*/thermal_throttle/{core,package}_throttle_count`;
+`recent` = either sum increased within the last 60 s. Widget: **warn** when
+`recent` is true; popup CPU section shows both counts.
+
+**A16 — `hwmon fancurve` (item 4).** `hwmon fancurve [--hours N ≤ 24]
+[--bin C, default 5]`: one row per CPU-package temperature bin — samples,
+min/avg/max `fan_rpm`, and avg `fan.target_rpm` when present. Reads `raw`
+only (pairing needs per-second rows), so ≤ 24 h — stated in `--help`.
+Adds `fan_target_rpm` as a column in `raw`, migrated with
+`ALTER TABLE … ADD COLUMN` when absent (old rows NULL).
+
+**A17 — Power-loss events (item 6).** New table `events(ts_start REAL,
+ts_end REAL, kind TEXT, last_pct INT, last_status TEXT, detail TEXT)`, kept
+30 days. At daemon start, if the newest `raw` row is > 30 s older than now,
+the daemon classifies the gap and inserts one row:
+- `hard_poweroff` — last sample Discharging with `pct ≤ 5`, AND the current
+  boot's journal (`journalctl -b 0`, readable without root — measured) has
+  `systemd-fsck` "Dirty bit is set" or `systemd-journald` "uncleanly shut
+  down"; `detail` quotes the matched line.
+- `unclean_shutdown` — the journal evidence without the low-battery condition.
+- `off_or_stopped` — neither (clean shutdown, collector stopped, suspend).
+`hwmon events [--days N]` lists them; it also scans the retained `raw` for
+gaps not yet in `events` (so history present at upgrade time is covered),
+without writing.
+
+## MODIFIED
+
+- **M7 (A8 thresholds, item 3):** remove `fan ≥ 5000 RPM` warn (with mbpfan
+  the fan reaches 5,300 RPM during video playback — measured). Replace with
+  **"cooling saturated" warn**: `fan.rpm ≥ 0.95 × fan.max_rpm` AND
+  `cpu.package_c ≥ 80`. CPU and battery-temp thresholds unchanged.
+- **M8:** snapshot `schema` 1 → 2 (A13–A15 keys). The shape check's exact-key
+  rule for non-dynamic dicts now covers `power_guard`, `fan`, `cpu.throttle`;
+  `power_guard.blockers` is a list checked per element.
+
+## REMOVED
+
+- **R4:** power-profile display (item 7) — duplicate of `omarchy.power`.
+
+## Acceptance (v3) — observed, each with a positive control
+
+9. WHEN the inhibitor list holds only `delay` entries THEN `sleep_blocked` is
+   false — **live** (today's three are all delay); AND WHEN a fixture holds a
+   `block` sleep inhibitor THEN true and it appears in `blockers`.
+10. WHEN `mbpfan` runs THEN live `fan.control == "mbpfan"` (current state);
+    fixtures cover `smc` (`manual=0`) and `manual` (`manual=1`, no pidfile).
+11. WHEN fixture counts rise between two samples THEN `throttle.recent` is
+    true, and false 61 s later (injected clock).
+12. WHEN `hwmon fancurve --hours 24` runs on the real DB THEN the rows before
+    15:31 PDT show a flat ~1300 RPM and rows after show a rising average —
+    i.e. it reproduces today's measured table.
+13. WHEN `hwmon events` runs on the real DB THEN it reports a
+    `hard_poweroff` around **09:36 PDT 2026-09-23 at ≤ 3 %** with the fsck line
+    as detail — today's real event is the positive control. A fixture with a
+    gap but no journal evidence yields `off_or_stopped`.
+14. WHEN the label is fed fan 5,300 RPM at 72 °C THEN it is NOT warn (M7);
+    WHEN fed 5,950/6,199 RPM at 84 °C THEN warn. WHEN pct 8, Discharging,
+    sleep_blocked THEN critical.
+15. Checks 0–8 still pass against schema 2.
