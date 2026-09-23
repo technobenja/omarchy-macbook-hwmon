@@ -8,9 +8,10 @@ It was built for a machine that has just had a new iFixit battery and fan
 fitted: it keeps the low-level health numbers (fan, SMC temperatures, battery
 power and wear) one glance away, and keeps a history.
 
-> **Status (2026-09-23):** spec v2 approved after an advisor review; the build
-> is in progress. Sections marked *(planned)* describe the spec, not shipped
-> code. See [`specs/spec.md`](specs/spec.md).
+> **Status (2026-09-23):** installed and running on omarchy. Collector,
+> CLI, systemd unit and bar widget are built; 105 unit tests pass; the widget
+> was verified in the live shell (placement before the battery, live and stale
+> label, both popup pages, no QML warnings). See [`specs/spec.md`](specs/spec.md).
 
 ## What it shows
 
@@ -44,26 +45,66 @@ to `hwmon —` instead of showing an old number as current.
   [`tests/fixtures/latest.example.json`](tests/fixtures/latest.example.json);
   both halves are tested against it.
 
-## Install *(planned)*
+## Install
 
 ```bash
 git clone http://gitea.lab:3000/techno/hwmon.git ~/dev/hwmon
 ~/dev/hwmon/install.sh
 ```
 
-`install.sh` validates the plugin, installs the CLI and the user service, and
-places the widget before the battery with `omarchy plugin enable` (it backs up
-`~/.config/omarchy/shell.json` first). `install.sh --uninstall` reverses it and
-keeps the history database; add `--purge` to delete that too.
+`install.sh` (idempotent, no root, `set -euo pipefail`):
 
-## CLI *(planned)*
+1. `omarchy plugin validate plugin/techno.hwmon` — aborts on failure.
+2. Installs the CLI to `~/.local/bin/hwmon` and the Python package beside it,
+   at `~/.local/share/hwmon/lib/hwmon/` (the launcher puts that `lib/` dir on
+   `PYTHONPATH` and execs `python3 -m hwmon`, so the two must stay paired).
+3. Stages the plugin as a real copy (`cp -rL`, never a symlink — the
+   validator refuses symlinks) into a temp dir under
+   `~/.config/omarchy/plugins/`, then one `mv` into place.
+4. Installs `systemd/hwmon.service` and runs
+   `systemctl --user enable --now hwmon.service`.
+5. Takes a timestamped backup of `~/.config/omarchy/shell.json`, then uses
+   the platform rather than hand-editing it: `omarchy-shell shell
+   rescanPlugins` → `omarchy plugin enable techno.hwmon --section right
+   --before omarchy.power` (leaves an already-placed widget where it is, so
+   running install.sh again is a no-op there).
 
 ```bash
-hwmon                     # current readings, hardware first
-hwmon --json              # the raw snapshot
-hwmon history [metric] [--minutes N]
-hwmon peaks               # highest values since boot and in the last 24 h
+~/dev/hwmon/install.sh --uninstall           # keeps hwmon.db
+~/dev/hwmon/install.sh --uninstall --purge   # also deletes hwmon.db
 ```
+
+`--uninstall` disables the widget, stops and removes the systemd unit, and
+removes the CLI and package. History (`hwmon.db`) is kept unless `--purge`
+is also given.
+
+> **After an update, run `omarchy restart shell`.** The shell hot-reloads the
+> widget's entry file, but Quickshell keeps its cached copies of the popup's
+> other QML files, so a changed popup keeps showing the old layout until the
+> shell restarts (observed 2026-09-23). `install.sh` also doesn't restart a
+> running collector: run `systemctl --user restart hwmon.service` after
+> updating Python code.
+
+## CLI
+
+```bash
+hwmon                                   # current readings, hardware first
+hwmon --json                            # the raw snapshot
+hwmon history [metric] [--minutes N]    # default: all six headline metrics, last 60 min
+hwmon peaks                             # highest values since boot and in the last 24 h
+hwmon daemon                            # run the collector loop in the foreground (what the service runs)
+```
+
+Every command that reads `latest.json` exits non-zero with a clear message
+if the snapshot is missing or more than 5 s old — it never prints a stale
+number as if it were current.
+
+`--state-dir DIR` / `--db PATH` (or the `HWMON_STATE_DIR` / `HWMON_DB`
+environment variables) override where `latest.json` and `hwmon.db` live.
+The defaults are `$XDG_RUNTIME_DIR/hwmon/latest.json` and
+`~/.local/share/hwmon/hwmon.db` — what `install.sh` and `hwmon.service`
+use; the overrides exist mainly for testing against a scratch directory
+without touching real state.
 
 ## Scope
 
@@ -76,8 +117,10 @@ work but are untested.
 ```
 specs/spec.md                      the spec (v2) — the source of truth
 tests/fixtures/latest.example.json the collector ↔ widget contract
-hwmon/                             collector + CLI (planned)
-plugin/techno.hwmon/               omarchy-shell bar widget (in progress)
-systemd/hwmon.service              user service (planned)
-install.sh                         install / uninstall (planned)
+hwmon/                             collector + CLI
+tests/                             stdlib unittest suite (105 tests) + sysfs/procfs fixture builders
+plugin/techno.hwmon/               omarchy-shell bar widget
+systemd/hwmon.service              user service (built)
+install.sh                         install / uninstall
+bin/hwmon                          thin launcher installed to ~/.local/bin/hwmon
 ```

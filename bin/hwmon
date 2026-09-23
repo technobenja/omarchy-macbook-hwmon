@@ -1,0 +1,34 @@
+#!/usr/bin/env sh
+# Thin launcher for the hwmon CLI.
+#
+# Install layout (see install.sh / README.md):
+#   ~/.local/bin/hwmon                 <- this file
+#   ~/.local/share/hwmon/lib/hwmon/    <- the Python package (hwmon/*.py)
+#
+# This script only needs to find that "lib" directory and put it on
+# PYTHONPATH, then exec `python3 -m hwmon`. It works whether it's run from
+# the repo checkout (via a relative bin/../hwmon layout) or from the
+# installed ~/.local/bin/hwmon (via ../share/hwmon/lib relative to itself).
+
+set -eu
+
+self_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+
+# Installed layout: ~/.local/bin/hwmon -> ~/.local/share/hwmon/lib
+candidate="$(dirname -- "$self_dir")/share/hwmon/lib"
+if [ -d "$candidate/hwmon" ]; then
+    lib_dir="$candidate"
+# Repo checkout layout: <repo>/bin/hwmon -> <repo> (hwmon/ package is right there)
+elif [ -d "$self_dir/../hwmon" ]; then
+    lib_dir="$self_dir/.."
+else
+    lib_dir="$HOME/.local/share/hwmon/lib"
+fi
+
+if [ -n "${PYTHONPATH:-}" ]; then
+    export PYTHONPATH="$lib_dir:$PYTHONPATH"
+else
+    export PYTHONPATH="$lib_dir"
+fi
+
+exec python3 -m hwmon "$@"

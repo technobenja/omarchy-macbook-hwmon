@@ -1,0 +1,13 @@
+[Unit]
+Description=hwmon hardware telemetry collector
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/hwmon daemon
+Restart=on-failure
+RuntimeDirectory=hwmon
+Nice=10
+
+[Install]
+WantedBy=graphical-session.target

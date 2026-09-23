@@ -94,6 +94,9 @@ real ones.
 lands in `sensors_invalid`, not in `temps`. (Measured invalids are −127, −43,
 −42.75.)
 
+*(Corrected 2026-09-23: -40 → 0 °C after TH0F read -34.75 live; exact-key
+temps check replaced by structural check.)*
+
 **A4 — Battery power, signed.** `battery.power_w = voltage_now × current_now`
 (µV × µA → W), **negative while discharging, positive while charging**, using
 `status`. `battery.health_pct = charge_full / charge_full_design × 100`.
@@ -215,9 +218,13 @@ the unit, remove the plugin dir and CLI. **Keeps `hwmon.db`** unless
 3. WHEN the machine is on battery THEN `battery.power_w` < 0; WHEN charging
    THEN > 0 (fixture both ways; live check for whichever state is current).
 4. WHEN the collector is stopped THEN within 6 s
-   `omarchy-shell shell call techno.hwmon state` reports `stale: true` and the
+   `omarchy-shell techno.hwmon state` reports `stale: true` and the
    label `hwmon —`; WHEN restarted THEN it returns to a live label within 3 s.
    One `grim` screenshot of the bar in each state for the human.
+   *(Corrected 2026-09-23: v2 said `omarchy-shell shell call …`, which only
+   resolves panel/overlay/menu plugins — `shell.qml:1279` looks up
+   `panelLoaders` — and returns `unknown` for a bar widget. A bar widget is
+   reached through its own `IpcHandler` target, as `omarchy.power` is.)*
 5. WHEN `install.sh` runs twice THEN `shell.json` contains `techno.hwmon`
    exactly once, positioned immediately before `omarchy.power`, and a backup
    exists; WHEN `--uninstall` runs THEN the layout equals the pre-install

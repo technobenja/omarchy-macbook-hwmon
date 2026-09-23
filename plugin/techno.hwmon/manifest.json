@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "techno.hwmon",
+  "name": "hwmon",
+  "version": "0.1.0",
+  "author": "techno",
+  "description": "CPU package temperature and fan speed in the bar; battery, fan, SMC sensors and system stats in a two-page popup. Reads $XDG_RUNTIME_DIR/hwmon/latest.json written by hwmon.service.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "Widget.qml"
+  },
+  "barWidget": {
+    "displayName": "Hardware monitor",
+    "description": "CPU package °C and fan krpm; click for battery, fan, SMC sensors (Hardware) and load, cores, memory, disk, network (System).",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
