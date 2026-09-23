@@ -101,8 +101,8 @@ lands in `sensors_invalid`, not in `temps`. (Measured invalids are −127, −43
 **A5 — Storage and retention.** `~/.local/share/hwmon/hwmon.db`,
 `journal_mode=WAL`, `synchronous=NORMAL` (no fsync per second on the SSD).
 Table `raw(ts REAL PRIMARY KEY, cpu_package_c, fan_rpm, battery_power_w,
-battery_pct, battery_temp_c, cpu_usage_pct, snapshot TEXT)` — the eight
-headline columns for fast queries, plus the full snapshot JSON. One INSERT +
+battery_pct, battery_temp_c, cpu_usage_pct, snapshot TEXT)` — six
+headline metric columns for fast queries, plus the full snapshot JSON. One INSERT +
 commit per tick. Table `minute(ts_min INTEGER PRIMARY KEY, <metric>_min/avg/max
 for the six headline metrics>)`. Raw rows kept 24 h, minute aggregates 30
 days. **History beyond 24 h exists only for those six metrics** — stated
