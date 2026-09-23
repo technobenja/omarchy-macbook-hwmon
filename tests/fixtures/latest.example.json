@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "ts": 1790179200.0,
   "battery": {
     "pct": 81,
@@ -16,6 +16,15 @@
   },
   "ac": {
     "online": false
+  },
+  "power_guard": {
+    "sleep_blocked": true,
+    "blockers": [
+      {
+        "who": "omarchy-update",
+        "why": "Omarchy update in progress"
+      }
+    ]
   },
   "cpu": {
     "package_c": 59.0,
@@ -46,14 +55,21 @@
         "usage_pct": 9.9,
         "freq_mhz": 1300.0
       }
-    ]
+    ],
+    "throttle": {
+      "core_count": 3,
+      "package_count": 3,
+      "recent": false
+    }
   },
   "fan": {
     "label": "Right Side",
     "rpm": 1292,
     "min_rpm": 1299,
     "max_rpm": 6199,
-    "manual": false
+    "manual": true,
+    "target_rpm": 2272,
+    "control": "mbpfan"
   },
   "temps": {
     "TC1C": 61.0,
