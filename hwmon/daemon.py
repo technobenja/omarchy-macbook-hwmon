@@ -17,8 +17,9 @@ import signal
 import sys
 import time
 from pathlib import Path
+from typing import Callable
 
-from . import snapshot, store
+from . import events, inhibitors, snapshot, store
 
 DEFAULT_INTERVAL_S = 1.0
 AGGREGATE_EVERY_S = 600.0  # 10 min, per A5
@@ -40,23 +41,78 @@ class _StopRequested(Exception):
     pass
 
 
+def _check_power_loss_events(
+    db_store: store.Store,
+    *,
+    now: float,
+    list_boots_fn: Callable[[], list[events.BootInfo] | None],
+    journal_query_fn: Callable[[str], list[dict] | None],
+) -> None:
+    """A17/B1/B2, run once at daemon start: classify any raw-table gap not
+    already recorded in `events` and insert it. Covers both a fresh gap
+    (this boot resuming after the previous one ended) and any older,
+    not-yet-backfilled gap still inside the 24 h raw retention window.
+
+    Never raises into the caller -- a busctl/journalctl failure here must
+    not prevent the collector loop from starting.
+    """
+    try:
+        points_raw = db_store.raw_points_for_events()
+    except Exception as exc:  # noqa: BLE001 - startup must never abort on this
+        print(f"hwmon: events check: could not read raw points: {exc!r}", file=sys.stderr)
+        return
+    if not points_raw:
+        return
+    points = [events.RawPoint(ts=ts, pct=pct, status=status) for ts, pct, status in points_raw]
+    try:
+        boots = list_boots_fn()
+    except Exception as exc:  # noqa: BLE001
+        print(f"hwmon: events check: list_boots failed: {exc!r}", file=sys.stderr)
+        return
+    if boots is None:
+        print("hwmon: events check: journalctl --list-boots unavailable, skipping", file=sys.stderr)
+        return
+    try:
+        existing = db_store.existing_event_ts_starts()
+        new_records = events.find_new_events(existing, points, boots, journal_query_fn, now=now)
+        for record in new_records:
+            db_store.insert_event(record)
+    except Exception as exc:  # noqa: BLE001
+        print(f"hwmon: events check failed: {exc!r}", file=sys.stderr)
+        return
+    if new_records:
+        kinds = ", ".join(sorted({r.kind for r in new_records}))
+        print(f"hwmon: recorded {len(new_records)} power-loss event(s) ({kinds})", file=sys.stderr)
+
+
 def run(
     *,
     state_dir: Path,
     db_path: Path,
     sysfs_root: Path = Path("/sys"),
     procfs_root: Path = Path("/proc"),
+    run_root: Path = Path("/run"),
     interval: float = DEFAULT_INTERVAL_S,
     aggregate_every: float = AGGREGATE_EVERY_S,
     iterations: int | None = None,
     install_signal_handlers: bool = True,
+    inhibitor_cache: inhibitors.InhibitorCache | None = None,
+    list_boots_fn: Callable[[], list[events.BootInfo] | None] = events.list_boots,
+    journal_query_fn: Callable[[str], list[dict] | None] = events.query_boot_journal,
+    check_events_at_start: bool = True,
 ) -> int:
     """Run the collector loop. Returns the number of samples written.
 
     `iterations`, when set, stops the loop after that many samples instead
     of running forever — used by tests and by the foreground proof-run
     rather than any wall-clock sleep hack.
+
+    `inhibitor_cache`, `list_boots_fn`, `journal_query_fn` default to the
+    real busctl/journalctl calls; tests inject fakes so the whole loop can
+    run with zero subprocesses.
     """
+    if inhibitor_cache is None:
+        inhibitor_cache = inhibitors.InhibitorCache()
     state_dir = Path(state_dir)
     state_dir.mkdir(parents=True, exist_ok=True)
     latest_path = state_dir / "latest.json"
@@ -80,12 +136,25 @@ def run(
     # errors changes, and once more when it clears.
     last_logged_errors: frozenset[str] = frozenset()
     with store.Store(db_path) as st:
+        if check_events_at_start:
+            _check_power_loss_events(
+                st,
+                now=time.time(),
+                list_boots_fn=list_boots_fn,
+                journal_query_fn=journal_query_fn,
+            )
         last_aggregate = time.time()
         while not stop_requested:
             loop_start = time.time()
             try:
+                power_guard = inhibitor_cache.get()
                 snap, prev_state = snapshot.build_snapshot(
-                    sysfs_root, procfs_root, prev_state, now=loop_start
+                    sysfs_root,
+                    procfs_root,
+                    prev_state,
+                    now=loop_start,
+                    run_root=run_root,
+                    power_guard=power_guard,
                 )
                 current_errors = frozenset(snapshot.validate_shape(snap))
                 if current_errors != last_logged_errors:

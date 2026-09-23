@@ -437,3 +437,43 @@ by bin — measured n/min/avg/max: 60: 52/1112/1713/2553 · 65: 303/1092/2188/38
 blocks; `cpu.throttle.recent` is `null` on the first sample; `fan.target_rpm`
 int|null. The schema-2 fixture holds **one** `block` blocker so the
 per-element check can fail.
+
+## v3 AS EXECUTED — 2026-09-23 (released as v1.1.0)
+
+Built by two agents (Python, QML) against the schema-2 fixture; battery
+pieces reviewed pre-deploy by a Fable advisor (SHIP-WITH-FIXES: S1 crossed
+boot must start inside the gap; S2 startup scan via `json_extract`, 0.19 s at
+86,400 rows; S3 install wait 10 s + half-upgrade message; S4 five test gaps
+incl. one that could not fail; S5 events dedupe set; S6 monotonic cache
+clock, busctl timeout 1 s) — all applied. 224 Python + 555 widget tests.
+Deployed with the B3 install ordering (restart → schema 2 → plugin swap),
+then `omarchy restart shell`.
+
+Verified **live** on omarchy (with positive controls):
+- 9: only `delay` inhibitors → `sleep_blocked:false`; a temporary user
+  `block` sleep inhibitor (`hwmon-test`) → `true` with the blocker listed,
+  back to `false` after it expired. **Banner not seen in the live popup** (it
+  opened on the System page and a synthetic key press didn't switch) —
+  verified in the harness only.
+- 10: `fan.control == "mbpfan"`, target 2969 vs actual 2968 RPM.
+- 11: **real throttling during Ben's stress runs**: package temp 99 °C at
+  16:53:34 PDT, `throttle.recent` true from the first event; counters
+  package 58 on each CPU / core 49 & 9 aggregated to 58 / 58 (naive sum
+  would be 232).
+- 12: `hwmon fancurve --hours 24`: SMC rows flat ~1300 (one 4000 from the
+  manual test), mbpfan rows rising to ~5800 avg at 85 °C.
+- 13: the daemon's first v3 start backfilled `hard_poweroff 09:37:02 PDT,
+  last_pct 2, boot 77091d3f…, "Dirty bit is set…"` into `events` — now
+  persistent past 24 h raw retention.
+- 6: collector steady state **0.92 %** of one core over 480 s (`/proc` delta,
+  same method as v2's 0.89 %; window overlapped Ben's stress runs), RSS
+  24.9 MB.
+
+Notes: acceptance 14's "30 s → not warn" holds for the saturation rule
+itself, but at 84 °C the unchanged CPU ≥ 80 °C warn colours the label anyway,
+so "cooling saturated" is visible only in the popup's fan section. During the
+~100 s full-load run the fan sat at max from +4 s and the CPU still reached
+99 °C and throttled (58 events, ≤ 11 ms each) — the chassis limit, not a
+fault. Deferred to the future hard-power-loss spec (advisor NITs): record
+"journal unavailable" after repeated failures; log a marker line at
+`pct ≤ 5 && Discharging`.

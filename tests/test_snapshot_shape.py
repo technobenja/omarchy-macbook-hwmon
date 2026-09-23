@@ -102,6 +102,44 @@ class ShapeValidationTests(unittest.TestCase):
         errors = snapshot.validate_shape(broken, self.fixture)
         self.assertTrue(any("per_core[0].usage_pct" in e for e in errors))
 
+    def test_power_guard_blockers_is_checked_per_element(self) -> None:
+        # M8: "power_guard.blockers is a list checked per element". The
+        # fixture holds exactly one blocker (S7) so this has something to
+        # mutate against.
+        broken = copy.deepcopy(self.fixture)
+        broken["power_guard"]["blockers"][0]["why"] = 123  # should be a str
+        errors = snapshot.validate_shape(broken, self.fixture)
+        self.assertTrue(any("blockers[0].why" in e for e in errors), msg=f"shape errors: {errors}")
+
+    def test_power_guard_blockers_extra_key_fails(self) -> None:
+        broken = copy.deepcopy(self.fixture)
+        broken["power_guard"]["blockers"][0]["bogus"] = 1
+        errors = snapshot.validate_shape(broken, self.fixture)
+        self.assertTrue(any("blockers[0].bogus" in e for e in errors), msg=f"shape errors: {errors}")
+
+    def test_power_guard_blockers_empty_list_is_valid(self) -> None:
+        # S7: blockers is [] (never null) when nothing blocks.
+        broken = copy.deepcopy(self.fixture)
+        broken["power_guard"]["sleep_blocked"] = False
+        broken["power_guard"]["blockers"] = []
+        errors = snapshot.validate_shape(broken, self.fixture)
+        self.assertEqual(errors, [])
+
+    def test_cpu_throttle_exact_key_set_required(self) -> None:
+        # M8: cpu.throttle is a fixed-schema dict (not a dynamic label map),
+        # unlike temps/cores_c.
+        broken = copy.deepcopy(self.fixture)
+        broken["cpu"]["throttle"]["bogus"] = 1
+        errors = snapshot.validate_shape(broken, self.fixture)
+        self.assertTrue(any("throttle.bogus" in e for e in errors))
+
+    def test_fan_control_and_target_rpm_are_nullable(self) -> None:
+        broken = copy.deepcopy(self.fixture)
+        broken["fan"]["control"] = None
+        broken["fan"]["target_rpm"] = None
+        errors = snapshot.validate_shape(broken, self.fixture)
+        self.assertEqual(errors, [])
+
 
 class DynamicLabelMapStructuralCheckTests(unittest.TestCase):
     """Corrected 2026-09-23 (spec A3 dated note): `temps` and `cpu.cores_c`

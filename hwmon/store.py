@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
+import time
 from pathlib import Path
 
 # The six headline metrics named in A5, in the fixed order used for both the
@@ -33,6 +35,8 @@ HEADLINE_METRICS: tuple[str, ...] = (
 
 RAW_RETENTION_S = 24 * 3600
 MINUTE_RETENTION_S = 30 * 24 * 3600
+#: A17: "kept 30 days" -- same tier as `minute`.
+EVENTS_RETENTION_S = 30 * 24 * 3600
 
 
 def _extract_headline(snapshot: dict) -> dict[str, float | int | None]:
@@ -78,15 +82,45 @@ class Store:
         self._conn.execute(
             f"CREATE TABLE IF NOT EXISTS minute (ts_min INTEGER PRIMARY KEY, {minute_cols})"
         )
+        # A16: fan.target_rpm as a `raw` column, for `hwmon fancurve`'s
+        # avg-target-per-bin. Migrated onto a pre-v3 DB with ADD COLUMN
+        # (old rows read back NULL, per A16) rather than recreating `raw`.
+        self._migrate_add_column("raw", "fan_target_rpm", "REAL")
+        # A17/B2: `UNIQUE(ts_start)` is the single dedupe key shared by the
+        # daemon-start check, the one-time backfill, and `hwmon events`'s
+        # own live re-scan.
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS events (
+                ts_start REAL NOT NULL,
+                ts_end REAL,
+                kind TEXT NOT NULL,
+                last_pct INTEGER,
+                last_status TEXT,
+                detail TEXT,
+                boot_id TEXT,
+                UNIQUE(ts_start)
+            )
+            """
+        )
         self._conn.commit()
 
+    def _migrate_add_column(self, table: str, column: str, sql_type: str) -> None:
+        existing = {row[1] for row in self._conn.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
+
     def insert_raw(self, snapshot: dict) -> None:
-        """One INSERT + commit per tick (A5)."""
+        """One INSERT + commit per tick (A5). `fan_target_rpm` (A16) comes
+        straight from the snapshot's `fan.target_rpm`, defaulting to NULL on
+        a pre-v3 snapshot that doesn't carry the key at all."""
         h = _extract_headline(snapshot)
+        fan_target_rpm = snapshot.get("fan", {}).get("target_rpm")
         self._conn.execute(
             "INSERT OR REPLACE INTO raw "
-            "(ts, cpu_package_c, fan_rpm, battery_power_w, battery_pct, battery_temp_c, cpu_usage_pct, snapshot) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "(ts, cpu_package_c, fan_rpm, battery_power_w, battery_pct, battery_temp_c, "
+            "cpu_usage_pct, fan_target_rpm, snapshot) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 snapshot["ts"],
                 h["cpu_package_c"],
@@ -95,6 +129,7 @@ class Store:
                 h["battery_pct"],
                 h["battery_temp_c"],
                 h["cpu_usage_pct"],
+                fan_target_rpm,
                 json.dumps(snapshot),
             ),
         )
@@ -105,12 +140,18 @@ class Store:
         now: float,
         raw_retention_s: float = RAW_RETENTION_S,
         minute_retention_s: float = MINUTE_RETENTION_S,
+        events_retention_s: float = EVENTS_RETENTION_S,
     ) -> None:
         """Recompute minute aggregates from current raw rows, then prune both
         tables against `now`. Aggregation re-derives every bucket still
         present in `raw` on each call (cheap: raw is capped at ~86,400 rows)
         so a still-filling minute keeps updating until it ages out, and
         nothing here depends on wall-clock time beyond the `now` argument.
+
+        Also prunes `events` older than `events_retention_s` (A17: "kept 30
+        days") -- events are written independently (`insert_event`), never
+        derived from `raw`/`minute`, so pruning them here is just retention,
+        not aggregation.
         """
         select_cols = ", ".join(
             f"MIN({m}) AS {m}_min, AVG({m}) AS {m}_avg, MAX({m}) AS {m}_max" for m in HEADLINE_METRICS
@@ -131,6 +172,7 @@ class Store:
         )
         self._conn.execute("DELETE FROM raw WHERE ts < ?", (now - raw_retention_s,))
         self._conn.execute("DELETE FROM minute WHERE ts_min < ?", (now - minute_retention_s,))
+        self._conn.execute("DELETE FROM events WHERE ts_start < ?", (now - events_retention_s,))
         self._conn.commit()
 
     def raw_row_count(self) -> int:
@@ -153,6 +195,99 @@ class Store:
             (since,),
         )
         return cur.fetchall()
+
+    # --- A16: hwmon fancurve ------------------------------------------------------
+
+    def fancurve_raw(self, since: float) -> list[tuple[float | None, float | None, float | None, str]]:
+        """`(cpu_package_c, fan_rpm, fan_target_rpm, snapshot)` for every raw
+        row at or after `since`, oldest first. A16 reads `raw` only (pairing
+        temp with fan RPM needs the per-second rows, which `minute` doesn't
+        keep) -- so this is bounded by the 24 h raw retention, same as the
+        `--hours <= 24` CLI limit."""
+        cur = self._conn.execute(
+            "SELECT cpu_package_c, fan_rpm, fan_target_rpm, snapshot FROM raw "
+            "WHERE ts >= ? ORDER BY ts ASC",
+            (since,),
+        )
+        return cur.fetchall()
+
+    # --- A17/B1/B2: power-loss events ----------------------------------------------
+
+    def insert_event(self, record) -> bool:
+        """`INSERT OR IGNORE`, keyed on `UNIQUE(ts_start)` -- B2's shared
+        dedupe key across the daemon-start check, the backfill, and
+        `hwmon events`'s own scan. Returns True iff a new row was actually
+        inserted (False on a duplicate `ts_start`)."""
+        cur = self._conn.execute(
+            "INSERT OR IGNORE INTO events "
+            "(ts_start, ts_end, kind, last_pct, last_status, detail, boot_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                record.ts_start,
+                record.ts_end,
+                record.kind,
+                record.last_pct,
+                record.last_status,
+                record.detail,
+                record.boot_id,
+            ),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def existing_event_ts_starts(self) -> set[float]:
+        cur = self._conn.execute("SELECT ts_start FROM events")
+        return {row[0] for row in cur.fetchall()}
+
+    def list_events(
+        self, days: float, now: float
+    ) -> list[tuple[float, float | None, str, int | None, str | None, str | None, str | None]]:
+        """`(ts_start, ts_end, kind, last_pct, last_status, detail, boot_id)`
+        for every recorded event in the last `days` days, oldest first."""
+        since = now - days * 86400
+        cur = self._conn.execute(
+            "SELECT ts_start, ts_end, kind, last_pct, last_status, detail, boot_id FROM events "
+            "WHERE ts_start >= ? ORDER BY ts_start ASC",
+            (since,),
+        )
+        return cur.fetchall()
+
+    #: S2 (advisor): the startup events scan is worth a warning once it
+    #: gets slow enough to notice -- 1 s is the threshold the advisor
+    #: measured against (unoptimized: ~0.26 s @ 9k rows, extrapolating to
+    #: ~2.5 s @ 86k, the full 24 h raw table).
+    _SLOW_SCAN_WARN_S = 1.0
+
+    def raw_points_for_events(self) -> list[tuple[float, float | None, str | None]]:
+        """`(ts, battery_pct, battery_status)` for every retained raw row,
+        oldest first -- needed for A17/B1's classification, which needs
+        both `pct` and `status` and `raw`'s own `battery_pct` column
+        doesn't carry `status`. Only called at daemon start, in the
+        backfill, and by `hwmon events` -- never once per tick.
+
+        **S2 (advisor, measured):** the original form ran `json.loads` on
+        every retained snapshot in Python -- 0.26 s at ~9k rows,
+        extrapolating to ~2.5 s at the full 24 h / ~86,400-row raw table.
+        `json_extract` is SQLite's own (JSON1, compiled into stdlib
+        `sqlite3`) reader, done once per row inside the query itself --
+        measured 0.062 s at ~9k rows, no per-row Python JSON parsing at
+        all. A slow scan (something json_extract itself doesn't expect,
+        e.g. a very large or WAL-checkpoint-contended database) still logs
+        a line rather than silently taking however long it takes.
+        """
+        start = time.perf_counter()
+        cur = self._conn.execute(
+            "SELECT ts, battery_pct, json_extract(snapshot, '$.battery.status') FROM raw ORDER BY ts ASC"
+        )
+        points = cur.fetchall()
+        elapsed = time.perf_counter() - start
+        if elapsed > self._SLOW_SCAN_WARN_S:
+            print(
+                f"hwmon: raw_points_for_events scan took {elapsed:.2f}s for {len(points)} rows "
+                "(> 1s warning threshold)",
+                file=sys.stderr,
+            )
+        return points
 
     def peaks(self, now: float) -> dict[str, dict[str, float | None]]:
         """Highest recorded value per headline metric: `last_24h` (from raw,

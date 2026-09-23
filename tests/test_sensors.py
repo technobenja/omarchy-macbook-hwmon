@@ -17,6 +17,11 @@ class TempRootTestCase(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
         self.sysfs = self._tmp / "sys"
         self.procfs = self._tmp / "proc"
+        # A14: a fake /run, so a test that sets fan_manual=1 never touches
+        # this machine's REAL /run/mbpfan.pid -- reading real host state in
+        # a unit test is exactly the nondeterminism this fixture exists to
+        # avoid (this machine really does run mbpfan).
+        self.run = self._tmp / "run"
 
 
 class ReadTextTests(TempRootTestCase):
@@ -91,27 +96,102 @@ class HwmonDiscoveryTests(TempRootTestCase):
 class FanTests(TempRootTestCase):
     def test_label_trailing_space_is_stripped(self) -> None:
         fakefs.add_applesmc(self.sysfs, index=2, fan_label="Right Side  ")
-        fan = sensors.read_fan(self.sysfs)
+        fan = sensors.read_fan(self.sysfs, run_root=self.run, procfs_root=self.procfs)
         self.assertEqual(fan["label"], "Right Side")
 
     def test_fan_fields(self) -> None:
         fakefs.add_applesmc(
             self.sysfs, index=2, fan_rpm=1292, fan_min=1299, fan_max=6199, fan_manual=0
         )
-        fan = sensors.read_fan(self.sysfs)
+        fan = sensors.read_fan(self.sysfs, run_root=self.run, procfs_root=self.procfs)
         self.assertEqual(fan["rpm"], 1292)
         self.assertEqual(fan["min_rpm"], 1299)
         self.assertEqual(fan["max_rpm"], 6199)
         self.assertIs(fan["manual"], False)
 
     def test_manual_true(self) -> None:
+        # No mbpfan.pid in self.run -> "manual" (A14), never a real-host lookup.
         fakefs.add_applesmc(self.sysfs, index=2, fan_manual=1)
-        fan = sensors.read_fan(self.sysfs)
+        fan = sensors.read_fan(self.sysfs, run_root=self.run, procfs_root=self.procfs)
         self.assertIs(fan["manual"], True)
 
+    def test_target_rpm_from_fan1_output(self) -> None:
+        fakefs.add_applesmc(self.sysfs, index=2, fan_manual=1, fan_output=2272)
+        fan = sensors.read_fan(self.sysfs, run_root=self.run, procfs_root=self.procfs)
+        self.assertEqual(fan["target_rpm"], 2272)
+
+    def test_target_rpm_null_when_fan1_output_absent(self) -> None:
+        fakefs.add_applesmc(self.sysfs, index=2, fan_manual=0)
+        fan = sensors.read_fan(self.sysfs, run_root=self.run, procfs_root=self.procfs)
+        self.assertIsNone(fan["target_rpm"])
+
     def test_no_applesmc_yields_all_none_not_exception(self) -> None:
-        fan = sensors.read_fan(self.sysfs)
-        self.assertEqual(fan, {"label": None, "rpm": None, "min_rpm": None, "max_rpm": None, "manual": None})
+        fan = sensors.read_fan(self.sysfs, run_root=self.run, procfs_root=self.procfs)
+        self.assertEqual(
+            fan,
+            {
+                "label": None,
+                "rpm": None,
+                "min_rpm": None,
+                "max_rpm": None,
+                "manual": None,
+                "target_rpm": None,
+                "control": None,
+            },
+        )
+
+
+class FanControlTests(TempRootTestCase):
+    """A14: `fan.control` -- "smc" if fan1_manual==0; "mbpfan" if
+    fan1_manual==1 AND /run/mbpfan.pid names a LIVE process whose
+    /proc/<pid>/comm is "mbpfan"; otherwise "manual"; null if manual itself
+    is unreadable."""
+
+    def test_manual_false_is_smc(self) -> None:
+        control = sensors.read_fan_control(False, run_root=self.run, procfs_root=self.procfs)
+        self.assertEqual(control, "smc")
+
+    def test_manual_none_is_null(self) -> None:
+        control = sensors.read_fan_control(None, run_root=self.run, procfs_root=self.procfs)
+        self.assertIsNone(control)
+
+    def test_manual_true_no_pidfile_is_manual(self) -> None:
+        control = sensors.read_fan_control(True, run_root=self.run, procfs_root=self.procfs)
+        self.assertEqual(control, "manual")
+
+    def test_manual_true_with_live_mbpfan_is_mbpfan(self) -> None:
+        fakefs.write_mbpfan_pid(self.run, pid=4242)
+        fakefs.write_proc_comm(self.procfs, pid=4242, comm="mbpfan")
+        control = sensors.read_fan_control(True, run_root=self.run, procfs_root=self.procfs)
+        self.assertEqual(control, "mbpfan")
+
+    def test_manual_true_with_stale_pidfile_wrong_comm_is_manual(self) -> None:
+        # Positive control: the pid exists but belongs to something else
+        # (a reused/stale pid) -- must NOT read as "mbpfan".
+        fakefs.write_mbpfan_pid(self.run, pid=4242)
+        fakefs.write_proc_comm(self.procfs, pid=4242, comm="bash")
+        control = sensors.read_fan_control(True, run_root=self.run, procfs_root=self.procfs)
+        self.assertEqual(control, "manual")
+
+    def test_manual_true_with_pidfile_but_dead_process_is_manual(self) -> None:
+        # pidfile exists but /proc/<pid>/comm doesn't (process is gone).
+        fakefs.write_mbpfan_pid(self.run, pid=9999)
+        control = sensors.read_fan_control(True, run_root=self.run, procfs_root=self.procfs)
+        self.assertEqual(control, "manual")
+
+    def test_manual_true_with_non_numeric_pidfile_is_manual(self) -> None:
+        self.run.mkdir(parents=True, exist_ok=True)
+        (self.run / "mbpfan.pid").write_text("not-a-pid\n")
+        control = sensors.read_fan_control(True, run_root=self.run, procfs_root=self.procfs)
+        self.assertEqual(control, "manual")
+
+    def test_read_fan_wires_control_through(self) -> None:
+        fakefs.add_applesmc(self.sysfs, index=2, fan_manual=1, fan_output=4000)
+        fakefs.write_mbpfan_pid(self.run, pid=20237)
+        fakefs.write_proc_comm(self.procfs, pid=20237, comm="mbpfan")
+        fan = sensors.read_fan(self.sysfs, run_root=self.run, procfs_root=self.procfs)
+        self.assertEqual(fan["control"], "mbpfan")
+        self.assertEqual(fan["target_rpm"], 4000)
 
 
 class BatteryTests(TempRootTestCase):

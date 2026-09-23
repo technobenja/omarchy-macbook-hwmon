@@ -57,6 +57,57 @@ do_install() {
     rm -rf "$LIB_DEST"
     cp -rL "$REPO_DIR/hwmon" "$LIB_DEST"
 
+    log "installing systemd user unit"
+    mkdir -p "$SYSTEMD_USER_DIR"
+    install -m 0644 "$REPO_DIR/systemd/$SERVICE_NAME" "$SYSTEMD_USER_DIR/$SERVICE_NAME"
+    systemctl --user daemon-reload
+    systemctl --user enable "$SERVICE_NAME"
+
+    # B3 (advisor, measured): `enable --now` alone does not restart an
+    # ALREADY-ACTIVE unit -- on an update this left the collector running
+    # the OLD package with the OLD schema. Always `restart` explicitly, so
+    # a fresh install and an update behave the same way.
+    log "restarting $SERVICE_NAME to pick up the installed package"
+    systemctl --user restart "$SERVICE_NAME"
+
+    # B3: only stage the plugin once the collector has proven it is
+    # actually running the new schema -- a stale collector writing schema 1
+    # under a plugin built for schema 2 is exactly what A9 staleness
+    # handling is NOT meant to paper over.
+    #
+    # S3 (advisor): wait at least 10s, not 3 -- 3s cut it too close against
+    # a cold-cache Python import + first-tick sensor discovery. The
+    # `got_schema=... || true` guards the command-substitution assignment
+    # so a non-zero exit from the python probe (a transient read racing the
+    # collector's atomic rename, for instance) can't abort this script
+    # under `set -e` mid-loop -- an empty/mismatched `$got_schema` already
+    # falls through to another `sleep` iteration on its own.
+    log "waiting up to 10s for $SERVICE_NAME to report the current schema"
+    runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    latest_json="$runtime_dir/hwmon/latest.json"
+    want_schema="$(python3 -c "import sys; sys.path.insert(0, '$REPO_DIR'); from hwmon.snapshot import SCHEMA_VERSION; print(SCHEMA_VERSION)")"
+    schema_ok=0
+    for _ in $(seq 1 20); do
+        if [ -f "$latest_json" ]; then
+            got_schema="$(python3 -c "
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        print(json.load(f).get('schema'))
+except Exception:
+    print('')
+" "$latest_json" 2>/dev/null)" || true
+            if [ -n "$got_schema" ] && [ "$got_schema" = "$want_schema" ]; then
+                schema_ok=1
+                break
+            fi
+        fi
+        sleep 0.5
+    done
+    if [ "$schema_ok" != "1" ]; then
+        die "$SERVICE_NAME did not report schema $want_schema within 10s after restart -- the machine is now HALF-UPGRADED (package and service replaced, but the bar plugin was NOT staged, so it still expects the old schema; once the collector does catch up it will show 'hwmon —' in the bar per A9 until the plugin is updated too). Check 'journalctl --user -u $SERVICE_NAME', then re-run install.sh."
+    fi
+
     log "staging plugin copy (real copy, never a symlink)"
     mkdir -p "$PLUGIN_DEST_DIR"
     stage_dir="$(mktemp -d "$PLUGIN_DEST_DIR/.stage-${PLUGIN_ID}.XXXXXX")"
@@ -66,12 +117,6 @@ do_install() {
     mv "$stage_dir/$PLUGIN_ID" "$PLUGIN_DEST"
     trap - EXIT
     rm -rf "$stage_dir"
-
-    log "installing systemd user unit"
-    mkdir -p "$SYSTEMD_USER_DIR"
-    install -m 0644 "$REPO_DIR/systemd/$SERVICE_NAME" "$SYSTEMD_USER_DIR/$SERVICE_NAME"
-    systemctl --user daemon-reload
-    systemctl --user enable --now "$SERVICE_NAME"
 
     if [ -f "$SHELL_JSON" ]; then
         backup="$SHELL_JSON.bak.$(date +%Y%m%dT%H%M%S)"
@@ -88,8 +133,7 @@ do_install() {
     omarchy plugin enable "$PLUGIN_ID" --section right --before omarchy.power
 
     log "install complete"
-    log "on an UPDATE: run 'systemctl --user restart $SERVICE_NAME' and 'omarchy restart shell'"
-    log "(the shell keeps cached popup QML; a running collector keeps old code)"
+    log "remember: run 'omarchy restart shell' -- Quickshell keeps cached popup QML across updates"
 }
 
 do_uninstall() {

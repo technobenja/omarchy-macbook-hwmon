@@ -58,6 +58,7 @@ def add_applesmc(
     fan_min: int | None = 1299,
     fan_max: int | None = 6199,
     fan_manual: int | None = 0,
+    fan_output: int | None = None,
     temps_milli_c: dict[str, int] | None = None,
     name_file_on_class_entry: bool = False,
 ) -> Path:
@@ -90,6 +91,8 @@ def add_applesmc(
         (device / "fan1_max").write_text(f"{fan_max}\n")
     if fan_manual is not None:
         (device / "fan1_manual").write_text(f"{fan_manual}\n")
+    if fan_output is not None:
+        (device / "fan1_output").write_text(f"{fan_output}\n")
 
     n = 1
     for label, milli_c in temps_milli_c.items():
@@ -169,3 +172,50 @@ def write_route(procfs_root: Path, default_iface: str | None) -> None:
     if default_iface is not None:
         lines.append(f"{default_iface}\t00000000\t0104000A\t0003\t0\t0\t600\t00000000\t0\t0\t0")
     (procfs_root / "net" / "route").write_text("\n".join(lines) + "\n")
+
+
+# --- A14: fan control mode (mbpfan pidfile + /proc/<pid>/comm) -------------------
+
+
+def write_mbpfan_pid(run_root: Path, pid: int) -> None:
+    """`/run/mbpfan.pid` -- what `sensors.read_fan_control` looks for to
+    tell mbpfan-controlled from a bare manual override (A14)."""
+    run_root.mkdir(parents=True, exist_ok=True)
+    (run_root / "mbpfan.pid").write_text(f"{pid}\n")
+
+
+def write_proc_comm(procfs_root: Path, pid: int, comm: str) -> None:
+    """`/proc/<pid>/comm` for a fake "live process" -- the second half of
+    A14's mbpfan-vs-manual test (a stale pidfile naming a dead/reused pid
+    must NOT read as `"mbpfan"`)."""
+    pid_dir = procfs_root / str(pid)
+    pid_dir.mkdir(parents=True, exist_ok=True)
+    (pid_dir / "comm").write_text(f"{comm}\n")
+
+
+# --- A15: CPU thermal throttle counters + topology --------------------------------
+
+
+def add_cpu_throttle(
+    sysfs_root: Path,
+    cpu_index: int,
+    *,
+    core_id: int | None = None,
+    core_throttle_count: int | None = None,
+    package_throttle_count: int | None = None,
+) -> Path:
+    """`/sys/devices/system/cpu/cpuN/{topology/core_id,
+    thermal_throttle/{core,package}_throttle_count}` (A15/S3)."""
+    cpu_dir = sysfs_root / "devices" / "system" / "cpu" / f"cpu{cpu_index}"
+    if core_id is not None:
+        topo = cpu_dir / "topology"
+        topo.mkdir(parents=True, exist_ok=True)
+        (topo / "core_id").write_text(f"{core_id}\n")
+    if core_throttle_count is not None or package_throttle_count is not None:
+        throttle = cpu_dir / "thermal_throttle"
+        throttle.mkdir(parents=True, exist_ok=True)
+        if core_throttle_count is not None:
+            (throttle / "core_throttle_count").write_text(f"{core_throttle_count}\n")
+        if package_throttle_count is not None:
+            (throttle / "package_throttle_count").write_text(f"{package_throttle_count}\n")
+    return cpu_dir

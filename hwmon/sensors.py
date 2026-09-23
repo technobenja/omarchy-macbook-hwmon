@@ -149,11 +149,14 @@ def _label_index(base: Path) -> tuple[tuple[str, str], ...]:
 
 
 def clear_discovery_cache() -> None:
-    """Drop the memoized hwmon discovery / label-index results. Only needed
-    by tests that deliberately mutate a sysfs tree after it has already been
-    discovered once under the same path; the daemon never needs this."""
+    """Drop the memoized hwmon discovery / label-index / CPU-topology
+    results. Only needed by tests that deliberately mutate a sysfs tree
+    after it has already been discovered once under the same path; the
+    daemon never needs this."""
     find_hwmon_by_name.cache_clear()
     _label_index.cache_clear()
+    list_cpu_indices.cache_clear()
+    _core_id_for_cpu.cache_clear()
 
 
 def power_supply_path(sysfs_root: Path, name: str) -> Path:
@@ -241,10 +244,24 @@ def read_cpu_temps(sysfs_root: Path) -> tuple[float | None, dict[str, float]]:
 # --- fan -----------------------------------------------------------------------
 
 
-def read_fan(sysfs_root: Path) -> dict:
+def read_fan(
+    sysfs_root: Path,
+    *,
+    run_root: Path = Path("/run"),
+    procfs_root: Path = Path("/proc"),
+) -> dict:
+    """Fan state (A2) plus A14's target RPM and control-mode fields."""
     base = find_hwmon_by_name(sysfs_root, "applesmc")
     if base is None:
-        return {"label": None, "rpm": None, "min_rpm": None, "max_rpm": None, "manual": None}
+        return {
+            "label": None,
+            "rpm": None,
+            "min_rpm": None,
+            "max_rpm": None,
+            "manual": None,
+            "target_rpm": None,
+            "control": None,
+        }
     label = read_text(base / "fan1_label")
     if label is not None:
         label = label.strip()
@@ -253,7 +270,36 @@ def read_fan(sysfs_root: Path) -> dict:
     max_rpm = read_int(base / "fan1_max")
     manual_raw = read_int(base / "fan1_manual")
     manual = None if manual_raw is None else bool(manual_raw)
-    return {"label": label, "rpm": rpm, "min_rpm": min_rpm, "max_rpm": max_rpm, "manual": manual}
+    target_rpm = read_int(base / "fan1_output")
+    control = read_fan_control(manual, run_root=run_root, procfs_root=procfs_root)
+    return {
+        "label": label,
+        "rpm": rpm,
+        "min_rpm": min_rpm,
+        "max_rpm": max_rpm,
+        "manual": manual,
+        "target_rpm": target_rpm,
+        "control": control,
+    }
+
+
+def read_fan_control(manual: bool | None, *, run_root: Path, procfs_root: Path) -> str | None:
+    """A14: `"smc"` if `fan1_manual == 0`; `"mbpfan"` if `fan1_manual == 1`
+    and `/run/mbpfan.pid` names a live process whose `/proc/<pid>/comm` is
+    `mbpfan`; otherwise `"manual"`; `None` if `manual` itself is unreadable.
+    """
+    if manual is None:
+        return None
+    if manual is False:
+        return "smc"
+    pid_text = read_text(run_root / "mbpfan.pid")
+    if pid_text is not None:
+        pid_text = pid_text.strip()
+        if pid_text.isdigit():
+            comm = read_text(procfs_root / pid_text / "comm")
+            if comm == "mbpfan":
+                return "mbpfan"
+    return "manual"
 
 
 # --- SMC temps + A3 invalid filter ---------------------------------------------
@@ -461,3 +507,110 @@ def net_rate(
     rx_bps = round((cur[0] - prev[0]) / dt, 1)
     tx_bps = round((cur[1] - prev[1]) / dt, 1)
     return rx_bps, tx_bps
+
+
+# --- CPU thermal throttle counts (A15, S3 aggregation) ---------------------------
+
+_CPU_DIR_RE = re.compile(r"^cpu(\d+)$")
+
+
+@functools.lru_cache(maxsize=8)
+def list_cpu_indices(sysfs_root: Path) -> tuple[int, ...]:
+    """Every logical CPU index with a `/sys/devices/system/cpu/cpuN/` dir.
+
+    Memoized per `sysfs_root` (module docstring): which logical CPUs exist
+    does not change while the daemon runs, so the `iterdir()` scan only
+    needs to happen once -- measured to matter: this and the `core_id`
+    cache below together cut the daemon's per-tick CPU use roughly back to
+    its pre-A15 baseline (busctl's own contribution, isolated by running
+    with a no-op poll_fn, measured at ~0.1 percentage points of one core --
+    it was the per-tick discovery work here, not busctl, that pushed the
+    tick over budget).
+    """
+    base = sysfs_root / "devices" / "system" / "cpu"
+    if not base.is_dir():
+        return ()
+    indices: list[int] = []
+    for entry in base.iterdir():
+        match = _CPU_DIR_RE.match(entry.name)
+        if match:
+            indices.append(int(match.group(1)))
+    return tuple(sorted(indices))
+
+
+@functools.lru_cache(maxsize=32)
+def _core_id_for_cpu(sysfs_root: Path, cpu_index: int) -> str | None:
+    """`topology/core_id` for one logical CPU -- fixed hardware topology,
+    read once per (sysfs_root, cpu_index) rather than every tick (see
+    `list_cpu_indices`)."""
+    base = sysfs_root / "devices" / "system" / "cpu" / f"cpu{cpu_index}"
+    return read_text(base / "topology" / "core_id")
+
+
+def read_cpu_throttle(sysfs_root: Path) -> dict:
+    """A15/S3: `{core_count, package_count}` summed over
+    `/sys/devices/system/cpu/cpu*/thermal_throttle/{core,package}_throttle_count`.
+
+    **S3 (advisor, measured):** naive summing double/quadruple-counts --
+    every logical CPU on this machine carries a COPY of its physical
+    package's `package_throttle_count` (measured: all four read the same
+    number), so `package_count` is the **max** across CPUs, not a sum.
+    `core_count` is the sum, over each DISTINCT `topology/core_id`, of the
+    max `core_throttle_count` across that core's sibling logical CPUs
+    (measured: cpu0,2 -> core 0; cpu1,3 -> core 1) -- each sibling also
+    carries a copy of its own physical core's counter.
+
+    A CPU missing either file contributes nothing to that metric (rather
+    than aborting the whole read) -- consistent with every other reader in
+    this module never raising on a missing file. If NO CPU has a readable
+    value for a metric, that metric is `None` (A15's whole-machine
+    "unreadable" case, e.g. a kernel without `CONFIG_X86_THERMAL_VECTOR`).
+    """
+    base = sysfs_root / "devices" / "system" / "cpu"
+    indices = list_cpu_indices(sysfs_root)
+
+    package_values: list[int] = []
+    core_values_by_id: dict[str, list[int]] = {}
+    for i in indices:
+        cpu_dir = base / f"cpu{i}"
+        package_count = read_int(cpu_dir / "thermal_throttle" / "package_throttle_count")
+        if package_count is not None:
+            package_values.append(package_count)
+        core_count = read_int(cpu_dir / "thermal_throttle" / "core_throttle_count")
+        core_id = _core_id_for_cpu(sysfs_root, i)
+        if core_count is not None and core_id is not None:
+            core_values_by_id.setdefault(core_id, []).append(core_count)
+
+    package_total = max(package_values) if package_values else None
+    core_total = sum(max(v) for v in core_values_by_id.values()) if core_values_by_id else None
+    return {"core_count": core_total, "package_count": package_total}
+
+
+def compute_throttle_recent(
+    prev_core_count: int | None,
+    prev_package_count: int | None,
+    prev_last_increase_ts: float | None,
+    cur_core_count: int | None,
+    cur_package_count: int | None,
+    now: float,
+    window_s: float = 60.0,
+) -> tuple[bool | None, float | None]:
+    """A15/S7: `recent` -- "either sum increased within the last 60 s" --
+    is `None` on the first sample that has a readable count (S7), and
+    otherwise `True` iff EITHER `core_count` or `package_count` rose since
+    the last time we saw a valid reading, within the trailing `window_s`.
+
+    Returns `(recent, new_last_increase_ts)`; the caller threads
+    `new_last_increase_ts` back in as `prev_last_increase_ts` on the next
+    call (state lives in `snapshot.SampleState`, mirroring every other rate
+    metric in this codebase).
+    """
+    if cur_core_count is None or cur_package_count is None:
+        return None, prev_last_increase_ts
+    if prev_core_count is None or prev_package_count is None:
+        return None, prev_last_increase_ts
+    last_increase_ts = prev_last_increase_ts
+    if cur_core_count > prev_core_count or cur_package_count > prev_package_count:
+        last_increase_ts = now
+    recent = last_increase_ts is not None and (now - last_increase_ts) <= window_s
+    return recent, last_increase_ts

@@ -4,6 +4,8 @@
     hwmon --json                       the snapshot verbatim
     hwmon history [metric] [--minutes N]   min/avg/max + a text sparkline
     hwmon peaks                        highest recorded values since boot / 24h
+    hwmon fancurve [--hours N] [--bin C]   fan RPM vs CPU temp, by control mode (A16)
+    hwmon events [--days N]            power-loss events (A17)
     hwmon daemon                       run the collector (A1)
 
 `--state-dir` / `--db` (or the `HWMON_STATE_DIR` / `HWMON_DB` environment
@@ -20,9 +22,10 @@ import argparse
 import json
 import sys
 import time
+from collections import defaultdict
 from pathlib import Path
 
-from . import daemon, snapshot, store
+from . import daemon, events, snapshot, store
 
 STALE_AFTER_S = 5.0
 
@@ -195,9 +198,126 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
         db_path=db_path,
         sysfs_root=args.sysfs_root,
         procfs_root=args.procfs_root,
+        run_root=args.run_root,
         interval=args.interval,
         iterations=args.iterations,
     )
+    return 0
+
+
+def _fan_control_for_row(snap: dict) -> str:
+    """A16/S6: group by `fan.control` when the row carries it (schema 2+);
+    older rows (schema 1, no `fan.control` key) are derived from
+    `fan.manual` -- False -> "smc", True -> "mbpfan". *(Interpretation:
+    schema-1 history on this machine never distinguished a deliberate
+    manual RPM test from mbpfan actually driving the fan, since neither
+    ever wrote a `control` field; empirically reproducing the spec's S6
+    measured table (min/max match exactly; n differs only by elapsed wall
+    time since the DB kept collecting after that table was captured)
+    confirmed this single-bucket derivation, rather than a 3-way
+    smc/manual/mbpfan split, is what the measured numbers came from.)*
+    """
+    fan = snap.get("fan", {}) if isinstance(snap, dict) else {}
+    control = fan.get("control")
+    if isinstance(control, str):
+        return control
+    manual = fan.get("manual")
+    if manual is True:
+        return "mbpfan"
+    if manual is False:
+        return "smc"
+    return "unknown"
+
+
+def _cmd_fancurve(args: argparse.Namespace) -> int:
+    if args.hours > 24:
+        print("hwmon: --hours must be <= 24 (raw retention is 24h, A16)", file=sys.stderr)
+        return 1
+    if args.hours <= 0:
+        print("hwmon: --hours must be > 0", file=sys.stderr)
+        return 1
+    if args.bin <= 0:
+        print("hwmon: --bin must be > 0", file=sys.stderr)
+        return 1
+    db_path = _resolve_db_path(args)
+    now = time.time()
+    since = now - args.hours * 3600
+    with store.Store(db_path) as st:
+        rows = st.fancurve_raw(since)
+    if not rows:
+        print(f"hwmon: no raw rows in the last {args.hours}h")
+        return 0
+
+    groups: dict[tuple[str, int], list[tuple[float, float | None]]] = defaultdict(list)
+    for package_c, fan_rpm, fan_target_rpm, snapshot_text in rows:
+        if package_c is None or fan_rpm is None:
+            continue
+        try:
+            snap = json.loads(snapshot_text)
+        except json.JSONDecodeError:
+            snap = {}
+        control = _fan_control_for_row(snap)
+        bucket = int(package_c // args.bin) * args.bin
+        groups[(control, bucket)].append((fan_rpm, fan_target_rpm))
+
+    print(f"{'control':<8} {'bin_c':>6} {'n':>6} {'min':>7} {'avg':>7} {'max':>7} {'avg_target':>11}")
+    for control, bucket in sorted(groups):
+        samples = groups[(control, bucket)]
+        rpms = [s[0] for s in samples]
+        targets = [s[1] for s in samples if s[1] is not None]
+        avg_target = f"{sum(targets) / len(targets):.0f}" if targets else "-"
+        print(
+            f"{control:<8} {bucket:>6} {len(rpms):>6} {min(rpms):>7.0f} "
+            f"{sum(rpms) / len(rpms):>7.0f} {max(rpms):>7.0f} {avg_target:>11}"
+        )
+    return 0
+
+
+def _cmd_events(args: argparse.Namespace) -> int:
+    db_path = _resolve_db_path(args)
+    now = time.time()
+    with store.Store(db_path) as st:
+        recorded = st.list_events(args.days, now)
+        # S5 (advisor): dedupe the live re-scan against EVERY recorded
+        # event (`existing_event_ts_starts()`), not just the ones inside
+        # the `--days` display window -- `list_events(days)` is for
+        # DISPLAY only. Deduping against `recorded` instead would let a
+        # short `--days` window re-classify (and needlessly re-query the
+        # journal for) a gap that is already recorded further back.
+        existing_ts = st.existing_event_ts_starts()
+        points_raw = st.raw_points_for_events()
+
+    points = [events.RawPoint(ts=ts, pct=pct, status=status) for ts, pct, status in points_raw]
+    boots = events.list_boots()
+    live_new: list[events.EventRecord] = []
+    if boots is None:
+        print(
+            "hwmon: journalctl --list-boots unavailable; showing recorded events only",
+            file=sys.stderr,
+        )
+    else:
+        # A17: "it also scans the retained raw for gaps not yet in events
+        # ... without writing" -- this command reports but never persists.
+        live_new = events.find_new_events(existing_ts, points, boots, events.query_boot_journal, now=now)
+
+    all_rows = list(recorded) + [
+        (r.ts_start, r.ts_end, r.kind, r.last_pct, r.last_status, r.detail, r.boot_id) for r in live_new
+    ]
+    all_rows.sort(key=lambda r: r[0])
+
+    if not all_rows:
+        print("hwmon: no power-loss events in the last {} day(s)".format(args.days))
+        return 0
+
+    for ts_start, ts_end, kind, last_pct, last_status, detail, boot_id in all_rows:
+        start_str = time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(ts_start))
+        end_str = "-" if ts_end is None else time.strftime("%H:%M:%S", time.localtime(ts_end))
+        print(
+            f"{start_str} -> {end_str}  {kind}  last_pct={_fmt(last_pct)}  "
+            f"last_status={_fmt(last_status)}  boot={_fmt(boot_id)}"
+        )
+        if detail:
+            print(f"    {detail}")
     return 0
 
 
@@ -219,12 +339,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_daemon.add_argument("--iterations", type=int, default=None, help="stop after N samples (for testing)")
     p_daemon.add_argument("--sysfs-root", type=Path, default=Path("/sys"))
     p_daemon.add_argument("--procfs-root", type=Path, default=Path("/proc"))
+    p_daemon.add_argument("--run-root", type=Path, default=Path("/run"), help="override /run (A14 mbpfan.pid)")
 
     p_history = sub.add_parser("history", help="show metric history")
     p_history.add_argument("metric", nargs="?", default=None, help=f"one of {store.HEADLINE_METRICS}")
     p_history.add_argument("--minutes", type=int, default=60)
 
     sub.add_parser("peaks", help="show peak values since boot and in the last 24h")
+
+    p_fancurve = sub.add_parser(
+        "fancurve", help="fan RPM vs CPU temp, grouped by control mode (A16)"
+    )
+    p_fancurve.add_argument(
+        "--hours", type=float, default=24.0, help="lookback window, <= 24 (raw retention); default 24"
+    )
+    p_fancurve.add_argument("--bin", type=float, default=5, help="CPU-package temperature bin width, C; default 5")
+
+    p_events = sub.add_parser("events", help="power-loss events (A17)")
+    p_events.add_argument("--days", type=float, default=30, help="lookback window in days; default 30")
 
     return parser
 
@@ -238,6 +370,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_history(args)
     if args.command == "peaks":
         return _cmd_peaks(args)
+    if args.command == "fancurve":
+        return _cmd_fancurve(args)
+    if args.command == "events":
+        return _cmd_events(args)
     return _cmd_default(args)
 
 

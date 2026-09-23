@@ -53,17 +53,30 @@ Panel {
   readonly property var status: Format.status(snapshot, loadState, nowMs, Thresholds.STALE_AFTER_S, loadError)
   readonly property bool stale: status.kind !== "ok"
   readonly property string label: Format.barLabel(status, snapshot, vertical)
-  readonly property string level: stale ? "muted" : Thresholds.worstLevel(snapshot)
+  // v3 M7/S5: "cooling saturated" must hold for 60 s of snapshot time, so the
+  // run is tracked here, sample by sample ({since, lastTs}, Thresholds.js).
+  property var saturation: Thresholds.newTracker()
+  readonly property string saturationLevel: stale ? "normal" : Thresholds.saturationLevel(saturation, snapshot)
+  readonly property string level: stale ? "muted" : Thresholds.worstLevel(snapshot, saturation)
 
   function ingest(text) {
     var r = Format.parse(text)
+    var now = Date.now()
+    var live = Format.status(r.snapshot, r.state, now, Thresholds.STALE_AFTER_S, r.error).kind === "ok"
+    root.saturation = Thresholds.trackSaturation(root.saturation, r.snapshot, live)
     root.snapshot = r.snapshot
     root.loadState = r.state
     root.loadError = r.error
-    root.nowMs = Date.now()
+    root.nowMs = now
+  }
+
+  function resetSaturation() {
+    if (root.saturation.since !== null || root.saturation.lastTs !== null)
+      root.saturation = Thresholds.newTracker()
   }
 
   function markMissing() {
+    root.resetSaturation()
     root.snapshot = null
     root.loadState = "missing"
     root.loadError = ""
@@ -110,6 +123,9 @@ Panel {
     triggeredOnStart: true
     onTriggered: {
       root.nowMs = Date.now()
+      // Stale data breaks a "cooling saturated" run (S5): it restarts from
+      // the next live saturated sample.
+      if (root.stale) root.resetSaturation()
       if (root.stale && root.snapshotPath !== "") snapshotFile.reload()
     }
   }
@@ -318,6 +334,7 @@ Panel {
             width: parent.width
             opacity: root.stale ? 0.45 : 1
             snapshot: root.snapshot
+            saturationLevel: root.saturationLevel
             foreground: root.foreground
             warnColor: root.warnColor
             urgentColor: root.urgentColor

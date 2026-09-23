@@ -23,8 +23,17 @@ from pathlib import Path
 
 from . import sensors
 
-SCHEMA_VERSION = 1
+# v3 delta, M8: schema 1 -> 2 (A13 power_guard, A14 fan.target_rpm/control,
+# A15 cpu.throttle). The widget treats any schema other than the current one
+# as not-live (A9), so the collector and the bar widget ship together.
+SCHEMA_VERSION = 2
 DEFAULT_DISK_DEVICE = "sda"
+DEFAULT_RUN_ROOT = Path("/run")
+
+#: A13: the null placeholder used when the caller doesn't supply a live
+#: `power_guard` reading (e.g. a test building a snapshot with no busctl
+#: involved at all). `blockers` is always a list, never null (S7).
+_NULL_POWER_GUARD: dict = {"sleep_blocked": None, "blockers": []}
 
 # Keys that must always be present and non-null (everything else is nullable
 # per A2: "Every leaf is nullable (null = could not read) except schema and ts").
@@ -34,7 +43,7 @@ _NON_NULLABLE = frozenset({"schema", "ts"})
 # tests/test_snapshot_shape.py. Do not hand-edit this without also updating
 # (or checking against) the fixture — they are asserted equal.
 _REFERENCE_SNAPSHOT: dict = {
-    "schema": 1,
+    "schema": 2,
     "ts": 1790179200.0,
     "battery": {
         "pct": 81,
@@ -50,6 +59,12 @@ _REFERENCE_SNAPSHOT: dict = {
         "charge_design_ah": 6.4,
     },
     "ac": {"online": False},
+    "power_guard": {
+        "sleep_blocked": True,
+        "blockers": [
+            {"who": "omarchy-update", "why": "Omarchy update in progress"},
+        ],
+    },
     "cpu": {
         "package_c": 59.0,
         "cores_c": {"Core 0": 58.0, "Core 1": 59.0},
@@ -61,13 +76,16 @@ _REFERENCE_SNAPSHOT: dict = {
             {"usage_pct": 16.2, "freq_mhz": 2100.0},
             {"usage_pct": 9.9, "freq_mhz": 1300.0},
         ],
+        "throttle": {"core_count": 3, "package_count": 3, "recent": False},
     },
     "fan": {
         "label": "Right Side",
         "rpm": 1292,
         "min_rpm": 1299,
         "max_rpm": 6199,
-        "manual": False,
+        "manual": True,
+        "target_rpm": 2272,
+        "control": "mbpfan",
     },
     "temps": {
         "TC1C": 61.0,
@@ -116,6 +134,11 @@ class SampleState:
     disk_raw: tuple[int, int] | None
     net_raw: tuple[int, int] | None
     net_iface: str | None
+    # A15/S7: cpu.throttle.recent's cross-tick state -- the last-seen counts
+    # (to detect an increase) and the last time either one increased.
+    throttle_core_count: int | None = None
+    throttle_package_count: int | None = None
+    throttle_last_increase_ts: float | None = None
 
 
 def build_snapshot(
@@ -125,13 +148,22 @@ def build_snapshot(
     *,
     now: float | None = None,
     disk_device: str = DEFAULT_DISK_DEVICE,
+    run_root: Path = DEFAULT_RUN_ROOT,
+    power_guard: dict | None = None,
 ) -> tuple[dict, SampleState]:
     """Read every sensor and assemble one A2 snapshot.
 
     Returns (snapshot, new_state); pass `new_state` back in as `prev` on the
-    next call so rate metrics (cpu.usage_pct, per_core usage, disk/net bps)
-    have something to diff against. `prev=None` (the first sample) yields
-    `null` for every rate field, per spec.
+    next call so rate metrics (cpu.usage_pct, per_core usage, disk/net bps,
+    cpu.throttle.recent) have something to diff against. `prev=None` (the
+    first sample) yields `null` for every rate field, per spec.
+
+    `power_guard` (A13) is a precomputed `{sleep_blocked, blockers}` dict --
+    this function does not shell out to `busctl` itself (that belongs to
+    `inhibitors.InhibitorCache`, which owns the "at most every 10 s" cache
+    across ticks; a pure per-sample builder has no place to keep that
+    state). Omitting it (the default) yields the A13 null placeholder,
+    which is what every test that doesn't care about power_guard gets.
     """
     ts = time.time() if now is None else now
 
@@ -145,9 +177,24 @@ def build_snapshot(
     ac = sensors.read_ac(sysfs_root)
     package_c, cores_c = sensors.read_cpu_temps(sysfs_root)
     load = sensors.read_loadavg(procfs_root)
-    fan = sensors.read_fan(sysfs_root)
+    fan = sensors.read_fan(sysfs_root, run_root=run_root, procfs_root=procfs_root)
     temps, invalid = sensors.read_smc_temps(sysfs_root)
     mem = sensors.read_mem(procfs_root)
+
+    throttle_raw = sensors.read_cpu_throttle(sysfs_root)
+    cur_core_count = throttle_raw["core_count"]
+    cur_package_count = throttle_raw["package_count"]
+    prev_core_count = prev.throttle_core_count if prev is not None else None
+    prev_package_count = prev.throttle_package_count if prev is not None else None
+    prev_last_increase_ts = prev.throttle_last_increase_ts if prev is not None else None
+    throttle_recent, throttle_last_increase_ts = sensors.compute_throttle_recent(
+        prev_core_count,
+        prev_package_count,
+        prev_last_increase_ts,
+        cur_core_count,
+        cur_package_count,
+        now=ts,
+    )
 
     cpu_times = sensors.read_cpu_times(procfs_root)
     usage_pct = None
@@ -187,12 +234,18 @@ def build_snapshot(
         "ts": ts,
         "battery": battery,
         "ac": ac,
+        "power_guard": dict(power_guard) if power_guard is not None else dict(_NULL_POWER_GUARD),
         "cpu": {
             "package_c": package_c,
             "cores_c": cores_c,
             "load": load,
             "usage_pct": usage_pct,
             "per_core": per_core,
+            "throttle": {
+                "core_count": cur_core_count,
+                "package_count": cur_package_count,
+                "recent": throttle_recent,
+            },
         },
         "fan": fan,
         "temps": temps,
@@ -204,7 +257,14 @@ def build_snapshot(
         },
     }
     new_state = SampleState(
-        ts=ts, cpu_times=cpu_times, disk_raw=disk_raw, net_raw=net_raw, net_iface=iface
+        ts=ts,
+        cpu_times=cpu_times,
+        disk_raw=disk_raw,
+        net_raw=net_raw,
+        net_iface=iface,
+        throttle_core_count=cur_core_count,
+        throttle_package_count=cur_package_count,
+        throttle_last_increase_ts=throttle_last_increase_ts,
     )
     return snapshot, new_state
 

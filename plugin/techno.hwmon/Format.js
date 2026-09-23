@@ -10,6 +10,7 @@
 
 var DASH = "–"                  // "–" : a null reading, in its slot
 var STALE_LABEL = "hwmon —"     // "hwmon —" : missing or stale snapshot (A9)
+var SCHEMA = 2                  // v3 M8: any other schema is not live (A9)
 
 function get(obj, path) {
   var parts = String(path).split(".")
@@ -49,7 +50,7 @@ function compactLabel(snapshot, vertical) {
 // ---------------------------------------------------------------- staleness
 
 // loadState: "pending" (no read attempted yet), "missing" (file absent /
-// unreadable), "invalid" (read, but not a schema-1 snapshot), "loaded".
+// unreadable), "invalid" (read, but not a schema-2 snapshot), "loaded".
 // Returns { kind: "ok"|"missing"|"invalid"|"stale", age_s, headline, detail }.
 // age_s is null whenever there is no usable timestamp.
 function status(snapshot, loadState, nowMs, staleAfterS, loadError) {
@@ -60,7 +61,7 @@ function status(snapshot, loadState, nowMs, staleAfterS, loadError) {
              detail: "latest.json not found. Is hwmon.service running?" }
   if (loadState === "invalid")
     return { kind: "invalid", age_s: null, headline: "No data: unreadable snapshot",
-             detail: String(loadError || "latest.json is not a schema-1 snapshot.") }
+             detail: String(loadError || "latest.json is not a schema-" + SCHEMA + " snapshot.") }
 
   var ts = get(snapshot, "ts")
   if (!isNum(ts))
@@ -115,8 +116,8 @@ function parse(text) {
   }
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
     return { snapshot: null, state: "invalid", error: "latest.json is not a JSON object." }
-  if (parsed.schema !== 1)
-    return { snapshot: null, state: "invalid", error: "Unsupported schema " + String(parsed.schema) + " (expected 1)." }
+  if (parsed.schema !== SCHEMA)
+    return { snapshot: null, state: "invalid", error: "Unsupported schema " + String(parsed.schema) + " (expected " + SCHEMA + ")." }
   return { snapshot: parsed, state: "loaded", error: "" }
 }
 
@@ -239,4 +240,50 @@ function invalidCountText(snapshot) {
   var list = invalidSensors(snapshot)
   if (list === null) return DASH
   return list.length === 0 ? "0" : list.length + " (" + list.join(", ") + ")"
+}
+
+// ---------------------------------------------------------------- v3
+
+// A14: fan.control -> "SMC auto" | "mbpfan" | "manual"; null -> "–". An
+// unknown string is shown as-is rather than hidden.
+function fanControl(v) {
+  if (v === "smc") return "SMC auto"
+  if (v === "mbpfan") return "mbpfan"
+  if (v === "manual") return "manual"
+  return text(v)
+}
+
+// A14: actual speed with the target beside it, e.g. "1292 rpm · target 2272 rpm".
+function fanSpeed(snapshot) {
+  return rpm(get(snapshot, "fan.rpm")) + " · target " + rpm(get(snapshot, "fan.target_rpm"))
+}
+
+// A13: each blocker as "who — why". blockers is [] when nothing blocks (S7);
+// a null / non-array list, a null element or a null field still renders.
+function blockerLines(snapshot) {
+  var list = get(snapshot, "power_guard.blockers")
+  if (!Array.isArray(list)) return []
+  var out = []
+  for (var i = 0; i < list.length; i++)
+    out.push(text(get(list[i], "who")) + " — " + text(get(list[i], "why")))
+  return out
+}
+
+// A13 popup banner. Worded as a fact about the current state (v3 amendment
+// S2): it names what is inhibiting sleep and never says that caused anything.
+// Returns { visible, title, lines }.
+function guardBanner(snapshot) {
+  if (get(snapshot, "power_guard.sleep_blocked") !== true)
+    return { visible: false, title: "", lines: [] }
+  var lines = blockerLines(snapshot)
+  return {
+    visible: true,
+    title: lines.length > 0 ? "Sleep is blocked by:" : "Sleep is blocked (no inhibitor listed).",
+    lines: lines
+  }
+}
+
+// A15: "yes" / "no" / "–" (recent is null on the collector's first sample, S7).
+function throttleRecent(snapshot) {
+  return bool(get(snapshot, "cpu.throttle.recent"), "yes", "no")
 }

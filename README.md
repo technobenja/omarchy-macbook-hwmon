@@ -8,10 +8,11 @@ It was built for a machine that has just had a new iFixit battery and fan
 fitted: it keeps the low-level health numbers (fan, SMC temperatures, battery
 power and wear) one glance away, and keeps a history.
 
-> **Status (2026-09-23):** installed and running on omarchy. Collector,
-> CLI, systemd unit and bar widget are built; 105 unit tests pass; the widget
-> was verified in the live shell (placement before the battery, live and stale
-> label, both popup pages, no QML warnings). See [`specs/spec.md`](specs/spec.md).
+> **Status (2026-09-23): v1.1.0 installed and running on omarchy.** Adds
+> the low-battery sleep-block guard, fan control mode + target RPM, CPU
+> throttle tracking, `hwmon fancurve` and `hwmon events` (power-loss history).
+> 224 Python + 555 widget tests; verified live — see the spec's *v3 AS
+> EXECUTED* note and [`CHANGELOG.md`](CHANGELOG.md).
 
 ## What it shows
 
@@ -81,9 +82,12 @@ is also given.
 > **After an update, run `omarchy restart shell`.** The shell hot-reloads the
 > widget's entry file, but Quickshell keeps its cached copies of the popup's
 > other QML files, so a changed popup keeps showing the old layout until the
-> shell restarts (observed 2026-09-23). `install.sh` also doesn't restart a
-> running collector: run `systemctl --user restart hwmon.service` after
-> updating Python code.
+> shell restarts (observed 2026-09-23). `install.sh` itself now restarts
+> `hwmon.service` on every run and waits (up to 10 s) for it to report the
+> current schema before staging the plugin — `enable --now` alone doesn't
+> restart an already-running collector, which used to leave it on the old
+> schema after an update. If the wait times out, the script dies rather
+> than stage a plugin the collector can't back up yet.
 
 ## CLI
 
@@ -92,8 +96,20 @@ hwmon                                   # current readings, hardware first
 hwmon --json                            # the raw snapshot
 hwmon history [metric] [--minutes N]    # default: all six headline metrics, last 60 min
 hwmon peaks                             # highest values since boot and in the last 24 h
+hwmon fancurve [--hours N] [--bin C]    # fan RPM vs CPU temp, grouped by control mode; --hours <= 24 (raw retention)
+hwmon events [--days N]                 # power-loss events (hard_poweroff / unclean_shutdown / off_or_stopped)
 hwmon daemon                            # run the collector loop in the foreground (what the service runs)
 ```
+
+`hwmon fancurve` reads only the per-second `raw` table (pairing a CPU temp
+with a fan RPM needs the 1 s samples, which the per-minute history doesn't
+keep), grouped by 5 °C bins (`--bin`) and by `fan.control` (`smc` / `mbpfan`
+/ `manual`) — a pre-v3 row with no `control` key is derived from
+`fan.manual` (`False` → `smc`, `True` → `mbpfan`).
+
+`hwmon events` lists recorded power-loss events and also live-rescans the
+retained `raw` table for any gap not yet recorded, without writing —
+recording only happens once, at daemon start (backfill included).
 
 Every command that reads `latest.json` exits non-zero with a clear message
 if the snapshot is missing or more than 5 s old — it never prints a stale
@@ -115,10 +131,11 @@ work but are untested.
 ## Layout
 
 ```
-specs/spec.md                      the spec (v2) — the source of truth
-tests/fixtures/latest.example.json the collector ↔ widget contract
+specs/spec.md                      the spec (v2, + v3 delta/amendment) — the source of truth
+tests/fixtures/latest.example.json the collector ↔ widget contract (schema 2)
+tests/fixtures/poweroff_2026-09-23/ real captured data for the events classifier (acceptance 13)
 hwmon/                             collector + CLI
-tests/                             stdlib unittest suite (105 tests) + sysfs/procfs fixture builders
+tests/                             stdlib unittest suite (201 tests) + sysfs/procfs fixture builders
 plugin/techno.hwmon/               omarchy-shell bar widget
 systemd/hwmon.service              user service (built)
 install.sh                         install / uninstall
