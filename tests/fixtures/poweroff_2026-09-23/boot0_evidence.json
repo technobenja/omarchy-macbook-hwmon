@@ -1,0 +1,20 @@
+[
+ {
+  "__REALTIME_TIMESTAMP": "1790201384164858",
+  "_BOOT_ID": "77091d3f90094084b893ba51d05dab0c",
+  "SYSLOG_IDENTIFIER": "systemd-fsck",
+  "MESSAGE": "Dirty bit is set. Fs was not properly unmounted and some data may be corrupt."
+ },
+ {
+  "__REALTIME_TIMESTAMP": "1790201385028065",
+  "_BOOT_ID": "77091d3f90094084b893ba51d05dab0c",
+  "SYSLOG_IDENTIFIER": "systemd-journald",
+  "MESSAGE": "File /var/log/journal/c6882bcf722648e98b468d59521ed19e/system.journal corrupted or uncleanly shut down, renaming and replacing."
+ },
+ {
+  "__REALTIME_TIMESTAMP": "1790201388693735",
+  "_BOOT_ID": "77091d3f90094084b893ba51d05dab0c",
+  "SYSLOG_IDENTIFIER": "systemd-journald",
+  "MESSAGE": "File /var/log/journal/c6882bcf722648e98b468d59521ed19e/user-1000.journal corrupted or uncleanly shut down, renaming and replacing."
+ }
+]

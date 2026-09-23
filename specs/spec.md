@@ -365,3 +365,75 @@ without writing.
     WHEN fed 5,950/6,199 RPM at 84 °C THEN warn. WHEN pct 8, Discharging,
     sleep_blocked THEN critical.
 15. Checks 0–8 still pass against schema 2.
+
+## v3 amendment — Fable advisor review 2026-09-23: APPROVE-WITH-CHANGES
+
+Folded the same day; claims marked *measured* were re-checked by the lead.
+These rules override the v3 text above wherever they differ.
+
+**B1 → A17 gap attribution.** A gap is a power-loss *candidate* only if the
+newest `raw` ts is **earlier than this boot's `btime`** (`/proc/stat`;
+measured 15:09:32 PDT). Otherwise it is `off_or_stopped` and the journal is
+not consulted (a `systemctl --user stop` or suspend inside one boot must never
+borrow that boot's fsck line). For a candidate, map it to the boot whose first
+entry is the first after the last sample (`journalctl --list-boots -o json`)
+and query **that boot by id**, never `-b 0`. Journal filter:
+`SYSLOG_IDENTIFIER=systemd-fsck` / `systemd-journald` (*measured*: `-u
+systemd-fsck` matches nothing). Journal is readable as `techno` via the ACL on
+`/var/log/journal`; don't require the `systemd-journal` group. `ts_start` comes
+from `raw` (journald lost the last ~30 s of boot −1: it ends 09:36:32, raw
+ends 09:37:02). Add `boot_id TEXT` to `events`; `last_pct` stored as INT.
+
+**B2 → backfill + permanent control.** The `events` migration **backfills**:
+scan `raw` gaps, classify as above, insert. `UNIQUE(ts_start)` is the dedupe
+key shared by the backfill, the daemon-start check and the `hwmon events`
+scan. **Today's event is preserved in `tests/fixtures/poweroff_2026-09-23/`**
+(668 real rows, one gap 09:37:02 → first post-boot row at pct 2; boot list;
+the three boot-0 evidence lines) — captured 2026-09-23 15:48 PDT before
+retention deleted it. Acceptance 13 runs against that fixture (permanent) and
+additionally live if built before ~09:47 PDT 2026-09-24.
+
+**B3 → install ordering.** `install.sh` on update: copy package →
+`systemctl --user restart hwmon.service` → wait ≤ 3 s for `latest.json` with
+the new `schema` → only then stage + `mv` the plugin. (*Measured*: `enable
+--now` left `NRestarts=0` and the collector on schema 1.)
+
+**S1 → inhibitor source.** `busctl --system -j call … ListInhibitors` →
+`json.loads(out)["data"][0]` rows `[what, who, why, mode, uid, pid]`
+(*measured*). `what` is colon-joined — split on `:` and test for `sleep`.
+
+**S2 → A13 background corrected.** The v3 background said UPower's 2 % action
+was "most likely" blocked by `block`-mode sleep inhibitors. **That is
+unproven and probably wrong:** `upowerd` runs as root, and logind lets root
+override inhibitors (advisor's reading of logind; not measured). Boot −1 has
+no `upowerd` lines at all and lost its last 30 s, so the cause of the missed
+2 % action is **unknown**. A13 stays as a *"sleep inhibited on low battery"*
+indicator (still useful: it is exactly the state you want to see), not as a
+diagnosis.
+
+**S3 → A15 aggregation.** `package_count` = **max** across CPUs (each logical
+CPU carries a copy of the one package counter). `core_count` = sum over
+distinct `topology/core_id` of the max across that core's siblings
+(*measured*: cpu0,2 → core 0; cpu1,3 → core 1). All counters read 0 live, so
+the positive control is a fixture with unequal non-zero values: package 3 on
+every CPU → 3 (not 12); cores 2,2 / 1,1 → 3 (not 6).
+
+**S4:** covered by B1's journal filter.
+
+**S5 → M7 is informational.** mbpfan reaches 0.95 × 6199 = 5889 RPM only at
+≥ 86 °C, where the CPU ≥ 80 °C warn already fires (measured today: max 5335
+RPM at 75 °C). Redefine "cooling saturated" as fan ≥ 0.95 × max **sustained
+≥ 60 s**; it is expected to be rare. Acceptance 14's 5950 RPM / 84 °C case is
+**fixture-only** (mbpfan cannot produce it).
+
+**S6 → acceptance 12 corrected.** Before 15:31 PDT the data includes Ben's
+manual 4000 RPM test (15:22:32–15:23:16, max 4259). `hwmon fancurve` groups by
+`fan.control` (v2 rows: derived from `fan.manual`), and check 12 expects: SMC
+rows flat ~1300 except the manual window; mbpfan rows (after 15:31:42) rising
+by bin — measured n/min/avg/max: 60: 52/1112/1713/2553 · 65: 303/1092/2188/3847
+· 70: 134/1255/2392/5225 · 75: 37/1763/3295/5335 · 80: 7/2383/3881/5231.
+
+**S7 → types.** `power_guard.blockers` is `[]` (never null) when nothing
+blocks; `cpu.throttle.recent` is `null` on the first sample; `fan.target_rpm`
+int|null. The schema-2 fixture holds **one** `block` blocker so the
+per-element check can fail.
