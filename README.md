@@ -8,11 +8,12 @@ It was built for a machine that has just had a new iFixit battery and fan
 fitted: it keeps the low-level health numbers (fan, SMC temperatures, battery
 power and wear) one glance away, and keeps a history.
 
-> **Status (2026-09-23): v1.1.0 installed and running on omarchy.** Adds
-> the low-battery sleep-block guard, fan control mode + target RPM, CPU
-> throttle tracking, `hwmon fancurve` and `hwmon events` (power-loss history).
-> 224 Python + 555 widget tests; verified live — see the spec's *v3 AS
-> EXECUTED* note and [`CHANGELOG.md`](CHANGELOG.md).
+> **Status (2026-09-24): v1.2.0 installed and running on omarchy.** Adds
+> hard-power-loss protection: a critical-battery journal marker, an optional
+> hibernate backstop (off unless configured), a UPower-vs-kernel battery
+> check, post-crash triage and a home-snapshot age check; the popup's System
+> page gains a RECOVERY section. 425 Python + 615 widget tests; verified live —
+> see the spec's *v4 AS EXECUTED — deploy* note and [`CHANGELOG.md`](CHANGELOG.md).
 
 ## What it shows
 

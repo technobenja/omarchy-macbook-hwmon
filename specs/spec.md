@@ -845,3 +845,36 @@ variant unwrap in `_dbus_get_property` -- `test_percentage_double_wrapped_varian
 `test_preparing_for_sleep_true_real_measured_shape`, and
 `test_single_wrapped_variant_is_rejected_not_misread` all went red; restored
 and reconfirmed green.
+
+## v4 AS EXECUTED — deploy (2026-09-24, released as v1.2.0)
+
+Widget half built on the branch (schema 2 → 3 in `Format.js`, RECOVERY rows,
+`recoveryLevel` in `worstLevel`). Found while building it: **the JS suite was
+already red on the branch** (the fixture moved to schema 3 and the widget
+rejected it). Deploying the Python half alone would have left the bar on a
+permanent `hwmon —`. Pre-deploy: widget review SHIP-WITH-FIXES (the new
+formatters were missing from the render sweep; an edit meant to add them had
+never applied, and its anchor was not asserted), advisor GO-WITH-CONDITIONS,
+and a live isolated smoke test of the new collector (0.81 % of a core against
+0.98 % for v1.1.0 over the same 160 s; backstop enabled, 0 hibernate attempts;
+it found `recovery.upower.sysfs_pct` typed int in the reference, now float on
+both paths).
+
+Verified **live** after `install.sh` + collector restart + `omarchy restart shell`:
+- widget IPC `{"stale":false,"age_s":0.4}` from the NEW shell process. That is
+  the plugin-load proof: a fresh shell start logs no per-plugin load line, only
+  hot-reload does, so the close-out's "load line must be present" check cannot
+  apply after a shell restart.
+- stale path: collector stopped 6 s → `hwmon —`, `stale:true`; live again < 1 s after start.
+- `hwmon --json`: schema 3, `recovery.upower.state = ok` (98.75 vs 98.82, which
+  proves the D-Bus readers work inside the service), `home_snapshot_state =
+  not_configured`; installed package and plugin byte-identical to the repo;
+  `techno.hwmon` once, before `omarchy.power`; no QML warnings naming it.
+- popup screenshot: System page shows RECOVERY → "Home snapshots: not set up",
+  "UPower vs battery: agrees · 98.9 % vs 98.9 %"; nothing truncated.
+- pre-drain: critical action `Hibernate`, `CanHibernate` yes, `sleep_blocked`
+  false, swapfile 0 B used, no pending image, backstop config armed (5).
+
+Only in tests: the backstop firing path, triage after a real hard power-off,
+`upower_divergent` after 60 s. The first real battery drain started
+immediately after this deploy.
