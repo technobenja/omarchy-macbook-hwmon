@@ -476,3 +476,21 @@ so "cooling saturated" is visible only in the popup's fan section. During the
 fault. Deferred to the future hard-power-loss spec (advisor NITs): record
 "journal unavailable" after repeated failures; log a marker line at
 `pct ≤ 5 && Discharging`.
+
+## Smoke + field test — 2026-09-23 18:10 PDT (v1.1.0)
+
+- **Smoke (19/19):** service + mbpfan active; widget fresh; plugin valid;
+  placed once before `omarchy.power`; versions 1.1.0 in repo, package, plugin,
+  tag; installed files identical to the repo; all six CLI commands exit 0;
+  schema 2 live; no journal warnings in 1 h; 224 + 555 tests; Gitea and GitHub
+  at the same commit.
+- **Fresh install from GitHub:** public clone → tests pass → `install.sh`
+  (schema wait passed) → widget live; installed copy identical to GitHub.
+- **Real load** (`stress --cpu 4`, 60 s): label tracked 64° → 86° at +3 s →
+  fan at max (6.2k) by +7 s → peak 98 °C / 6290 RPM; fan held ≥ 0.95 × max at
+  ≥ 80 °C for 57 samples (cooling-saturated condition met); no new throttle
+  events at this load (counter stayed 58); after the load the fan eased
+  6.2k → 5.4k → 4.0k → 2.3k → 1.3k over ~35 s. Widget never stale.
+- **Stale path:** collector stopped 6 s → `hwmon —`, `stale:true`,
+  `age_s:null`; live again 1.1 s after start; the short gap was correctly not
+  recorded as a power-loss event.
