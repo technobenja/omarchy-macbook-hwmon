@@ -529,6 +529,19 @@ class UPowerCache:
         return dict(self._last_result)
 
 
+def sysfs_pct_on_upower_scale(battery: dict) -> float | None:
+    """The sysfs battery percentage on UPower's scale, for the divergence
+    check only. sysfs `capacity` is charge_now over the DESIGN capacity, so a
+    cell healthier than design reads above 100 (measured 2026-09-24: capacity
+    104 while charge_now/charge_full = 99.81 and UPower = 99.78). UPower
+    divides by charge_full, so compare that; fall back to `capacity` when the
+    charge counters are missing. The backstop trigger keeps `capacity` (§11 R1).
+    """
+    now, full = battery.get("charge_now_ah"), battery.get("charge_full_ah")
+    if isinstance(now, (int, float)) and isinstance(full, (int, float)) and full > 0:
+        return round(now / full * 100, 2)
+    return battery.get("pct")
+
 def compute_upower_divergence(
     *,
     upower_pct: float | None,

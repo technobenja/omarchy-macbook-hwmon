@@ -884,3 +884,39 @@ class ConfigMismatchRateLimitTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SysfsPctOnUpowerScaleTests(unittest.TestCase):
+    """Measured 2026-09-24: capacity 104 (charge_now / charge_full_DESIGN on a
+    104.8%-health cell) while charge_now/charge_full = 99.81 and UPower = 99.78."""
+
+    def test_uses_charge_ratio_not_capacity(self) -> None:
+        battery = {"pct": 104, "charge_now_ah": 6.697, "charge_full_ah": 6.71}
+        self.assertAlmostEqual(backstop.sysfs_pct_on_upower_scale(battery), 99.81, places=2)
+
+    def test_healthy_cell_near_full_is_not_divergent(self) -> None:
+        battery = {"pct": 106, "charge_now_ah": 6.70, "charge_full_ah": 6.71}
+        result = backstop.compute_upower_divergence(
+            upower_pct=99.7, sysfs_pct=backstop.sysfs_pct_on_upower_scale(battery),
+            energy_full=76.09, energy_full_design=72.576,
+        )
+        self.assertEqual(result["state"], "ok")
+
+    def test_control_capacity_basis_would_be_divergent(self) -> None:
+        # The same numbers compared on the old basis (capacity) cross the 5-point line.
+        result = backstop.compute_upower_divergence(
+            upower_pct=99.7, sysfs_pct=106, energy_full=76.09, energy_full_design=72.576,
+        )
+        self.assertEqual(result["state"], "divergent")
+
+    def test_real_fault_still_divergent_on_charge_ratio(self) -> None:
+        battery = {"pct": 33, "charge_now_ah": 2.103, "charge_full_ah": 6.71}
+        result = backstop.compute_upower_divergence(
+            upower_pct=3.27161, sysfs_pct=backstop.sysfs_pct_on_upower_scale(battery),
+            energy_full=722.698, energy_full_design=72.576,
+        )
+        self.assertEqual(result["state"], "divergent")
+
+    def test_falls_back_to_capacity_without_charge_counters(self) -> None:
+        self.assertEqual(backstop.sysfs_pct_on_upower_scale({"pct": 57, "charge_now_ah": None, "charge_full_ah": None}), 57)
+        self.assertEqual(backstop.sysfs_pct_on_upower_scale({"pct": 57, "charge_now_ah": 1.0, "charge_full_ah": 0}), 57)

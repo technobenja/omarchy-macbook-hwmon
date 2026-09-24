@@ -506,7 +506,7 @@ def run(
                 # it reads sysfs once here -- sensors.py readers are cheap and
                 # this is one extra battery read among the ~110 sysfs files
                 # already read per tick.
-                sysfs_pct_for_divergence = sensors.read_battery(sysfs_root)["pct"]
+                sysfs_pct_for_divergence = backstop.sysfs_pct_on_upower_scale(sensors.read_battery(sysfs_root))
                 try:
                     divergence = _run_upower_divergence_tick(
                         st,
