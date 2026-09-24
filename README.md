@@ -144,7 +144,7 @@ work but are untested.
 
 ```
 specs/spec.md                      the spec (v2, + v3 delta/amendment) — the source of truth
-tests/fixtures/latest.example.json the collector ↔ widget contract (schema 2)
+tests/fixtures/latest.example.json the collector ↔ widget contract (schema 3)
 tests/fixtures/poweroff_2026-09-23/ real captured data for the events classifier (acceptance 13)
 hwmon/                             collector + CLI
 tests/                             stdlib unittest suite (201 tests) + sysfs/procfs fixture builders

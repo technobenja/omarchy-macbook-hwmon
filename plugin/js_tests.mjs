@@ -56,7 +56,7 @@ function renderAll(s, tracker) {
   return [
     F.compactLabel(s, false), F.compactLabel(s, true), F.barLabel(st, s, false), F.stateJson(st, s),
     F.fanSpeed(s), F.fanControl(F.get(s, "fan.control")), JSON.stringify(F.guardBanner(s)),
-    F.blockerLines(s).join("|"), F.throttleRecent(s),
+    F.blockerLines(s).join("|"), F.throttleRecent(s), F.homeSnapshots(s), F.upowerCheck(s), T.recoveryLevel(s),
     F.intText(F.get(s, "cpu.throttle.core_count")), F.intText(F.get(s, "cpu.throttle.package_count")),
     F.bool(F.get(s, "power_guard.sleep_blocked"), "yes", "no"),
     JSON.stringify(F.tempRows(F.get(s, "cpu.cores_c"))), JSON.stringify(F.tempRows(F.get(s, "temps"))),

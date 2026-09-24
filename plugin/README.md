@@ -5,7 +5,7 @@ that `hwmon.service` writes once a second and never talks to hardware itself.
 
 - **Input:** `$XDG_RUNTIME_DIR/hwmon/latest.json` (falls back to `/run/user/<uid>`),
   watched with `FileView { watchChanges: true; onFileChanged: reload() }`.
-  The contract is `../tests/fixtures/latest.example.json` (**schema 2**); every leaf may be `null`.
+  The contract is `../tests/fixtures/latest.example.json` (**schema 3**); every leaf may be `null`.
   Any other `schema` is treated as not live (`hwmon —`), so collector and widget ship together.
 - **Bar label:** `59° 1.3k` (CPU package °C, rounded · fan RPM / 1000, 1 decimal).
   A null reading shows `–` in its slot (`–° 1.3k`). Missing, unreadable or older
