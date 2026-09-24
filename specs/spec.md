@@ -494,3 +494,354 @@ fault. Deferred to the future hard-power-loss spec (advisor NITs): record
 - **Stale path:** collector stopped 6 s → `hwmon —`, `stale:true`,
   `age_s:null`; live again 1.1 s after start; the short gap was correctly not
   recorded as a power-loss event.
+
+---
+
+# v4 delta — 2026-09-23 (hwmon's slice of the hard-power-loss recovery spec)
+
+Scope: the Python-only requirements of `~/deliverables/omarchy-power-loss-recovery/SPEC.md`
+(DRAFT v2, §10 amendments supersede its §5 requirement text) that live in
+this repo per its §6.5 — R-L1.4, R-L1.5 (amended by §10 A4/A5), R-L3.1
+(amended by §10 A10c), R-L4.1, and the two events-table kinds R-L1.5/R-L3.1
+add. **The `omarchy-recover` CLI, the snapper `home` config, the UPower
+drop-in, and `install.sh`'s R-L1.2/R-L1.3/R-L4.2 steps are OUT of this
+repo's scope (a separate repo, per that spec's D4)** — this delta only
+covers what hwmon itself observes and records. Not deployed by this delta:
+no `install.sh` change, no version bump, no plugin/QML change (a later
+agent does the widget side of `recovery`/the new event kinds).
+
+**Contract:** `schema` becomes **3**. `tests/fixtures/latest.example.json`
+is updated first (schema 3, adding `recovery`) and both halves test against
+it, as in v3 — the widget treats any schema other than 3 as not-live
+(existing A9 rule).
+
+## ADDED
+
+**A18 — Local config file (R-L1.5's gate).** `hwmon/config.py`:
+`$XDG_CONFIG_HOME/hwmon/config.json` (falling back to
+`~/.config/hwmon/config.json`), currently one key, `hibernate_backstop`
+(bool, default `false`). Read fresh every tick (a lightweight local file
+read, not a subprocess) so toggling it live takes effect within one tick,
+with no daemon restart. Any read failure — missing file, unreadable,
+invalid JSON, wrong type for the key — yields the default (`false`), never
+an exception and never a silent "on".
+
+**A19 — Critical-battery journal marker (R-L1.4).** The first time in a
+boot that `battery.status == "Discharging" && battery.pct <=
+critical_pct` (default 5, the measured UPower default as of the
+deliverables spec's §2 — not yet the spec's final `PercentageAction`-derived
+number, since that install has not happened), hwmon logs
+`"hwmon: critical battery N%"` to its own stderr at `LOG_WARNING`
+(a `"<4>"` `SyslogLevelPrefix=` prefix — stdlib-only, no `syslog`/`logging`
+dependency) and runs `journalctl --user --sync`. Recorded as one
+`critical_battery_marker` event, deduped by `(kind, boot_id)` against the
+`events` table (`Store.has_event_kind_for_boot`) so a `systemctl --user
+restart` mid-boot does not re-fire it — "once per boot", not merely "once
+per process".
+
+**A20 — Hibernate backstop (R-L1.5, §10 A4/A5 SUPERSEDED by §11 M1/R1-R4
+below — a same-day fix pass, before this delta shipped).** **DISABLED BY
+DEFAULT** (A18) — the deliverables spec gates any automatic hibernate on a
+supervised round-trip test (its R-L1.1) that has not happened.
+
+- **§11 M1 (measured):** UPower's percentage was found ~10x wrong live
+  (sysfs `capacity=33` vs UPower `percentage=3.27161`; `energy-full`
+  722.698 Wh vs `energy-full-design` 72.576 Wh) -- a live UPower reliability
+  fault, not a fixed offset. Two hours earlier the two scales had agreed
+  within 2 points (49 vs 47.3).
+- **§11 R1 (BLOCKER):** the trigger reads sysfs `battery.pct`/`status` --
+  the SAME fields `critical_marker.py` already reads -- and makes NO
+  UPower call of its own. A backstop must not share a failure mode with
+  the primary (UPower's own critical action) it backs up.
+- **§11 R2:** the threshold is hwmon config, `backstop_action_pct`
+  (`config.py`), with NO default that enables anything -- `PercentageAction`
+  turned out not to be a real D-Bus property at all (measured: "No such
+  property"). If `hibernate_backstop` is true but `backstop_action_pct` is
+  absent, the backstop logs "could not check" once and does nothing.
+  §10 A4's `read_percentage_action` and its tests are deleted. An optional,
+  alert-only consistency check (`backstop.read_upower_conf_percentage_action`)
+  parses `/etc/UPower/UPower.conf` + `UPower.conf.d/*.conf` (later files
+  win) and flags a mismatch against `backstop_action_pct` -- never a second
+  trigger source, and a parse failure never disables the backstop.
+- **§11 R3 (BLOCKER, standing check):** UPower is still watched, just never
+  trusted alone. A low-rate (`UPowerCache`, ~10s) poll of `DisplayDevice`
+  `Percentage`/`EnergyFull`/`EnergyFullDesign` feeds `recovery.upower`
+  (A23) every tick and, once divergent (>5 points, OR energy ratio >1.2x)
+  for >=60s continuously, records one `upower_divergent` event per boot +
+  a notification. This never feeds back into the trigger.
+- **§11 R4:** `backstop_hibernate` is recorded ONLY on a successful
+  `hibernate_fn()`; a failed call records `backstop_refused`
+  (`reason="hibernate_call_failed"`) instead and does NOT consume the
+  per-boot `backstop_hibernate` cap.
+- **SHOULD 1 (review):** `PreparingForSleep` reading `None` (could not
+  check) REFUSES (`reason="preparing_for_sleep_unknown"`), never proceeds
+  as though it were clear.
+
+If `Discharging` and `pct <= backstop_action_pct − 2` (sysfs) holds for 20
+consecutive samples, and logind's `PreparingForSleep` is exactly `False`,
+hwmon calls logind `Hibernate` — refusing instead (recording
+`backstop_refused`, once per boot) when a `block` sleep inhibitor is
+present (the existing A13 `power_guard`), `PreparingForSleep` is
+unreadable, or `CanHibernate` is not exactly `"yes"` (the last two read
+fresh at the moment the threshold is crossed, never cached). At most one
+`backstop_hibernate` per boot (checked against `events`, like A19); at most
+one ATTEMPT (fire or refuse) per continuous low-battery episode — the
+20-sample counter must reset (pct rises out of the danger zone) and cross
+the threshold again before a second attempt in the same boot.
+
+**A21 — Post-crash triage (R-L3.1, amended by §10 A10c).** After
+`hwmon.service` records a new `hard_poweroff` or `unclean_shutdown` event
+(A17), hwmon runs one read-only triage, once (naturally deduped — it only
+runs for events A17's own `find_new_events` reports as genuinely new), and
+sends one desktop notification (`notify-send`, skipped entirely if absent).
+Checks: (1) the last `[ALPM]` block in `/var/log/pacman.log` inside the
+**crashed** boot's own time window (found from the event's `ts_start`
+against the boot list — NOT the event's own `boot_id`, which per A17/B1 is
+the *recovery* boot that starts after the gap) — `transaction started`
+with no later `transaction completed` anywhere in the log; (2)
+`/var/lib/pacman/db.lck` present with no `pacman` process running
+(`pgrep -x pacman`, never `-f`/`-a`); (3) that (recovery) boot's
+`systemd-fsck` lines, quoted verbatim, never pattern-matched; (4) that
+boot's kernel `BTRFS` lines at warning-or-worse, quoted verbatim; (5) for
+an interrupted transaction, a generic instruction to boot the newest
+pre-update snapshot from the Limine *Snapshots* menu — never a snapshot
+NUMBER, since listing root snapshots needs root (this session doesn't have
+it; the hook to plug in a privileged reader exists and is exercised only by
+a test). `pacman.log`'s explicit numeric UTC offset is parsed and converted
+before any comparison against the journal's own clock
+(`feedback_two_clocks`). Stored as one `triage` event with a JSON report
+(severity `info`/`action`/`unknown`).
+
+**A22 — `journal_unavailable` (R-L3.1's journal-failure counter).** After
+3 consecutive `journalctl --list-boots` failures (the same call A17's
+events check already makes at daemon start), hwmon records one
+`journal_unavailable` event and resets the streak (so a persistently broken
+journal records one event per 3-failure streak, not one per failure). Any
+success resets the streak to 0. `feedback_absent_is_not_zero`: three
+states, not two — a failed journal/pacman.log read anywhere in A21's triage
+makes that check's `..._ok`/lines field `None`/`null` and pushes the whole
+report's severity to `unknown`, which is reported as "could not check",
+never silently as "clean".
+
+**A23 — `recovery` snapshot key (R-L4.1, `upower` sub-key added by §11
+R3).** New key `recovery`:
+`{home_snapshot_state: "not_configured"|"unknown"|"fresh"|"stale",
+home_snapshot_age_s: float|null, upower: {state: "ok"|"divergent"|"unknown",
+upower_pct: float|null, sysfs_pct: float|null}}`. `home_snapshot_state`/
+`_age_s` source: `snapper --csvout --utc -c home list --columns
+number,date` (`recovery.py`), queried at most once per 60 s
+(`recovery.RecoveryCache`, mirroring `InhibitorCache`). `not_configured` —
+checked by `/etc/snapper/configs/home`'s FILE existence, never by
+`snapper`'s exit code — is the state before that config exists (the
+default on this machine today; that file is out of this repo's scope, D4)
+and MUST NOT read as stale. `unknown` is the config-exists-but-unreadable
+state (measured live 2026-09-23: even the pre-existing `root` config
+returns "No permissions." as `techno`). `stale` is `age_s > 7200`.
+`upower` is A20/§11 R3's INSTANTANEOUS standing-check reading (not the
+60s-sustained `upower_divergent` event) -- `unknown` when either
+percentage is unreadable; positive controls measured the same day: 33 vs
+3.27 -> `divergent`; 49 vs 47.3 -> `ok`.
+
+## MODIFIED
+
+- **`hwmon` events table**: new `kind` values `backstop_hibernate`,
+  `backstop_refused`, `journal_unavailable`, `triage`,
+  `critical_battery_marker`, `upower_divergent` (all share the existing
+  `events` schema — no column changes; `triage`'s JSON report lives in the
+  existing `detail` column). `Store` gains `has_event_kind_for_boot(kind,
+  boot_id)` (the per-boot dedupe A19/A20/A23 use) and a small generic
+  `meta(key, value)` table (A22's failure streak).
+- **`hwmon` snapshot**: schema 2 → 3, adding `recovery` (A23, including its
+  `upower` sub-key added by the same-day §11 fix pass). The fixture led the
+  code both times: `tests/fixtures/latest.example.json` and
+  `test_snapshot_shape.py`'s new cases were committed first and were red
+  (`recovery: unexpected key` / drift-guard failure, and again for
+  `recovery.upower`) until `snapshot.py`'s `_REFERENCE_SNAPSHOT` and
+  `build_snapshot()` were updated to match — same method as v3's `3680f1c`.
+- **`hwmon/config.py`**: `backstop_action_pct` key added alongside
+  `hibernate_backstop`; `ConfigCache` added (SHOULD 2, TTL-cached, ~10s).
+- **`hwmon/backstop.py`**: `read_percentage_action` DELETED (§11 R2 --
+  `PercentageAction` is not a real D-Bus property); `HibernateBackstop.evaluate()`'s
+  `percentage_action` parameter renamed `action_pct` and now sourced from
+  hwmon config, never UPower; `UPowerCache` now caches `{pct, energy_full,
+  energy_full_design}` (was `(pct, percentage_action)`) and is used ONLY
+  for the §11 R3 standing check, never the trigger.
+
+## REMOVED
+
+Nothing.
+
+## Acceptance (v4) — observed, each with a positive control
+
+16. WHEN `Discharging && pct <= critical_pct` first holds in a boot THEN
+    one `<4>hwmon: critical battery N%` line + one `journalctl --user
+    --sync` fire, and one `critical_battery_marker` event is recorded;
+    **positive control:** at `pct` one point above the threshold, nothing
+    fires. WHEN the daemon restarts mid-boot with the marker already
+    recorded THEN it does not fire (or sync) again.
+17. WHEN `hibernate_backstop` is absent/false in config THEN the backstop
+    never even reads UPower (proven: an injected UPower read records zero
+    calls). WHEN true, `backstop_action_pct` is set, and 20 consecutive
+    SYSFS samples cross `backstop_action_pct − 2` THEN `Hibernate` is
+    called using ONLY sysfs (proven: an injected, wildly different UPower
+    reading never affects the outcome) and one `backstop_hibernate` event
+    is recorded only if `hibernate_fn()` reports success (§11 R4);
+    **positive control (no per-sample retries):** 50 further samples in
+    the same episode fire nothing more. WHEN `hibernate_fn()` fails THEN
+    `backstop_refused` (`hibernate_call_failed`) is recorded instead and
+    the per-boot cap is NOT consumed. WHEN `backstop_action_pct` is absent
+    while enabled THEN "could not check" is logged once (not per tick) and
+    nothing acts. WHEN a `block` sleep inhibitor is present, or
+    `PreparingForSleep` is unreadable (SHOULD 1), at the trigger THEN
+    `backstop_refused` is recorded instead and `Hibernate` is never called;
+    a later episode, inhibitor cleared, may still fire.
+18. WHEN triage runs against the real `poweroff_2026-09-23/` fixture THEN
+    severity is `info` (fsck dirty-bit line quoted, no interrupted
+    transaction, no stale lock); **positive control:** a synthetic
+    `pacman.log` with a `transaction started` and no `transaction
+    completed` inside the crashed boot's window yields severity `action`
+    and the generic snapshot hint (never a number).
+19. WHEN `journalctl --list-boots` fails 3 times in a row THEN one
+    `journal_unavailable` event is recorded; **positive control:** 2
+    failures then a success resets the streak, so 2 more failures do not
+    reach a 4th event.
+20. WHEN no `/etc/snapper/configs/home` file exists THEN
+    `recovery.home_snapshot_state == "not_configured"` (never `"stale"`);
+    **positive control:** the file present but the command failing (or
+    unparseable) yields `"unknown"`, and a snapshot 1h/3h old yields
+    `"fresh"`/`"stale"` respectively (boundary at exactly 2h is `"fresh"`).
+21. Checks 0–15 still pass against schema 3.
+22. WHEN UPower percentage 3.27 and sysfs capacity 33 are fed to the §11 R3
+    divergence check THEN `recovery.upower.state == "divergent"`;
+    **positive control (today's earlier, healthy reading):** 47.3 vs 49
+    yields `"ok"`. WHEN divergent for >=60s continuously THEN one
+    `upower_divergent` event is recorded per boot + one notification;
+    **positive control:** a single non-divergent sample resets the streak.
+    An `energy_full/energy_full_design` ratio >1.2 (measured 9.96x) is
+    `"divergent"` even when the two percentages happen to agree.
+23. WHEN `backstop_action_pct` and `UPower.conf`'s `PercentageAction`
+    disagree THEN one alert (log + notification), not per tick;
+    **positive control:** matching values never alert, and a `UPower.conf`
+    parse failure alerts nothing (and does not touch the backstop's own
+    trigger — proven by the same run completing without the test's
+    failing `hibernate_fn` firing).
+
+## v4 AS EXECUTED — 2026-09-23
+
+Implemented: `hwmon/config.py`, `hwmon/critical_marker.py`,
+`hwmon/backstop.py`, `hwmon/triage.py`, `hwmon/recovery.py`; `sensors.py`
+gained `read_boot_id`; `store.py` gained `has_event_kind_for_boot` and the
+`meta` table; `daemon.py` wires all five in (each new external call —
+`sync_journal_fn`, `hibernate_fn`, `*_notify_fn`, `triage_runner`,
+`config_loader`, `upower_cache`, `hibernate_backstop`, `recovery_cache` — is
+injectable, defaulting to the real thing; no test in the suite calls a real
+hibernate). 352 Python tests (up from 229 before this delta). Not run live
+on the collector (no deploy in this delta — `install.sh`/`hwmon.service`
+untouched, per scope). `hibernate_backstop` confirmed structurally
+default-off; never exercised against real UPower/logind D-Bus objects
+(`busctl` calls are shape-tested against the exact JSON `inhibitors.py`
+already measured live, per S1, but not independently re-measured for the
+three new property/method names in this delta).
+
+## v4 fix pass AS EXECUTED — 2026-09-23 (§11 M1/R1-R4 + review SHOULDs, before ship)
+
+Same-day fix pass, applied before this delta was ever deployed (§10 A4 was
+built and immediately found unsafe by the build session's own measurements
+-- see §11). Changed: `backstop.py` (`read_percentage_action` deleted;
+`UPowerCache` redesigned around `{pct, energy_full, energy_full_design}`;
+`in_danger_zone`/`HibernateBackstop.evaluate()` take sysfs `pct` + config
+`action_pct`, never UPower; `read_upower_conf_percentage_action`,
+`is_config_mismatched`, `compute_upower_divergence`, `divergence_sustained`,
+`DivergenceState`, `ConfigWarningState` added); `config.py`
+(`backstop_action_pct` key, `ConfigCache`); `snapshot.py`
+(`recovery.upower`, still schema 3 -- this fix pass landed before v4 shipped,
+so it revises the same in-flight delta rather than opening a v5); `daemon.py`
+(`_run_backstop_tick` rewritten for R1/R2/R4, `_run_upower_divergence_tick`
+and `_maybe_alert_config_mismatch` added, `_OncePerPoll` rate-limiter added).
+
+Test hygiene (review SHOULD 3): every `daemon.run()` call across
+`test_daemon.py`, `test_daemon_v3.py`, `test_critical_marker.py`,
+`test_backstop.py`, `test_triage.py` now pins `XDG_CONFIG_HOME` to a temp
+dir and injects a `hibernate_fn` that raises `AssertionError` if ever
+called, plus a quiet `UPowerCache` fake (§11 R3 runs every tick regardless
+of `hibernate_backstop`, so it would otherwise attempt a real `busctl` call
+in every one of those files).
+
+352 → 400 Python tests, all passing (`python3 -m unittest discover -s
+tests -t .`). Mutation proof: reverted §11 R4 (recorded `backstop_hibernate`
+unconditionally, ignoring `hibernate_fn()`'s return value) — exactly
+`test_failed_hibernate_call_records_refused_not_hibernate_and_does_not_consume_cap`
+went red; restored and re-confirmed green.
+
+Not exercised live: same caveat as above, plus the three new §11 R3
+property names (`EnergyFull`, `EnergyFullDesign`) and the
+`UPower.conf`/`conf.d` consistency parser (no `home` config or drop-in
+exists yet to read for real).
+
+## v4 fix pass round 2 AS EXECUTED — 2026-09-23 (review BLOCKED; live shapes measured)
+
+Round-2 review blocked the fix pass above; the main session verified the
+blockers live before this round started. Measured live 2026-09-23:
+`busctl --system -j call org.freedesktop.login1 /org/freedesktop/login1
+org.freedesktop.DBus.Properties Get ss org.freedesktop.login1.Manager
+PreparingForSleep` -> `{"type":"v","data":[{"type":"b","data":false}]}`;
+the same `Get` for UPower `DisplayDevice`'s `EnergyFullDesign` ->
+`{"type":"v","data":[{"type":"d","data":0.0}]}`; `CanHibernate` ->
+`{"type":"s","data":["yes"]}`.
+
+1. **BLOCKER, fixed:** `backstop._dbus_get_property` unwrapped only the
+   OUTER `data[0]` -- `Properties.Get`'s "v" out-parameter is ITSELF a
+   variant, so the real shape nests a second `{"type","data"}`. Every
+   property read through it (`read_preparing_for_sleep`, the UPower
+   percentage/energy readers) silently returned `None` on a healthy bus.
+   Fixed with a second unwrap; live-shape tests added using the exact
+   fixtures above; mutation-proved (see below). Ran the fixed readers live:
+   `read_preparing_for_sleep() -> False`, `read_can_hibernate() -> "yes"`,
+   `find_battery_device_path() -> "/org/freedesktop/UPower/devices/battery_BAT0"`,
+   `read_battery_upower_properties() -> {"pct": 7.05, "energy_full": 722.70,
+   "energy_full_design": 72.58}` (sysfs `capacity` was 70 at the same
+   moment -- confirms the §11 M1 ~10x UPower fault is STILL live on this
+   machine).
+2. **BLOCKER, fixed:** `config._validate_action_pct` now rejects `bool`,
+   non-finite (`Infinity`/`-Infinity`/`NaN` -- `json.loads` accepts these as
+   an extension), and anything outside `(0, 100]`, logging one warning line
+   per rejection; `backstop_action_pct` stays `None` (§11 R2's "no default
+   that enables anything") on any rejection.
+3. **Fixed:** the standing check (R3) now reads `Percentage`/`EnergyFull`/
+   `EnergyFullDesign` from the REAL battery device
+   (`/org/freedesktop/UPower/devices/battery_BAT0`), discovered via
+   `EnumerateDevices` rather than hard-coded -- `DisplayDevice`'s
+   `EnergyFullDesign` was measured live to be `0.0`. `compute_upower_divergence`
+   now yields `"unknown"` (not a silent `"ok"`) when the energy ratio's
+   denominator is exactly `0` and the pct signal alone doesn't already say
+   `"divergent"`.
+4. **Fixed:** `_maybe_alert_config_mismatch` only re-reads `UPower.conf`
+   when the config loader's own `poll_count` changes (falls back to every
+   tick for a loader with no `poll_count`, e.g. a test's plain lambda).
+5. **Fixed:** `backstop.DivergenceState.notified_without_boot_id` -- a
+   per-process latch for when `boot_id` is `None`, since
+   `has_event_kind_for_boot(kind, None)` is a SQL `boot_id = NULL`
+   comparison that never matches, which is what sent the round-2 reviewer a
+   real desktop notification on every tick.
+6. **Fixed:** `HibernateBackstop.reset()`, called by `daemon.py` every tick
+   `hibernate_backstop` is off, so toggling it back on starts a fresh
+   20-sample count.
+7. **NIT, fixed:** `UPowerCache` now does one `Properties.GetAll` per
+   device instead of three separate `Get`s.
+8. **Fixed:** every `daemon.run()` test across `test_daemon.py`,
+   `test_daemon_v3.py`, `test_critical_marker.py`, `test_backstop.py`,
+   `test_triage.py` now injects no-op `backstop_notify_fn`/`triage_notify_fn`
+   (a real `notify-send` reached the round-2 reviewer's desktop from an
+   uninjected test run).
+
+Public-repo hygiene: the coordinator replaced the remaining username
+references (`as \`techno\`` in three comments, `ALLOW_USERS=techno` in
+`test_recovery.py`) with generic placeholders before this round; preserved
+here, not reintroduced.
+
+420 Python tests, all passing. Mutation proof (fix 1): removed the second
+variant unwrap in `_dbus_get_property` -- `test_percentage_double_wrapped_variant_parses`,
+`test_energy_full_design_real_measured_shape_on_display_device_is_zero`,
+`test_preparing_for_sleep_true_real_measured_shape`, and
+`test_single_wrapped_variant_is_rejected_not_misread` all went red; restored
+and reconfirmed green.

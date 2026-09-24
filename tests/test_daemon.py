@@ -17,7 +17,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from hwmon import daemon
+from hwmon import backstop, daemon
 
 from . import fakefs
 
@@ -72,9 +72,24 @@ class DaemonShapeMismatchLoggingTests(unittest.TestCase):
         self.sysfs, self.procfs = _build_valid_tree(self._tmp)
         self.state_dir = self._tmp / "state"
         self.db_path = self._tmp / "hwmon.db"
+        # SHOULD 3 (review): pin XDG_CONFIG_HOME to a temp dir on every test
+        # that calls daemon.run, so a real ~/.config/hwmon/config.json on
+        # the machine running the suite can never leak into a test (belt
+        # and suspenders alongside the explicit config_loader override below).
+        env_patch = mock.patch.dict("os.environ", {"XDG_CONFIG_HOME": str(self._tmp / "xdg-config")})
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
 
     def _run(self, error_sequence: list[list[str]]) -> str:
         stderr = io.StringIO()
+        # Fix pass (deliverables SPEC.md §11 R3): this test is about
+        # shape-mismatch logging only -- give the standing UPower divergence
+        # check a fake that agrees with the fixture's sysfs capacity (81) so
+        # it never itself logs anything and never shells out to a real
+        # busctl in a unit test.
+        upower_cache = backstop.UPowerCache(
+            read_fn=lambda: {"pct": 81.0, "energy_full": 50.0, "energy_full_design": 50.0}
+        )
         with mock.patch("hwmon.snapshot.validate_shape", side_effect=error_sequence):
             with contextlib.redirect_stderr(stderr):
                 daemon.run(
@@ -85,6 +100,13 @@ class DaemonShapeMismatchLoggingTests(unittest.TestCase):
                     interval=0.0,
                     iterations=len(error_sequence),
                     install_signal_handlers=False,
+                    upower_cache=upower_cache,
+                    config_loader=lambda: {"hibernate_backstop": False, "backstop_action_pct": None},
+                    hibernate_fn=lambda: (_ for _ in ()).throw(AssertionError("must never call a real hibernate_fn")),
+                    # Item 8 (review): every daemon.run() test must inject
+                    # notify_fn too, or a real notify-send can fire.
+                    backstop_notify_fn=lambda *a, **k: None,
+                    triage_notify_fn=lambda *a, **k: None,
                 )
         return stderr.getvalue()
 

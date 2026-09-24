@@ -193,6 +193,17 @@ def write_proc_comm(procfs_root: Path, pid: int, comm: str) -> None:
     (pid_dir / "comm").write_text(f"{comm}\n")
 
 
+# --- boot id (deliverables SPEC.md: per-boot dedupe) -------------------------------
+
+
+def write_boot_id(procfs_root: Path, boot_id_with_dashes: str) -> None:
+    """`/proc/sys/kernel/random/boot_id` -- the real kernel file's format,
+    dashes included (`sensors.read_boot_id` strips them)."""
+    base = procfs_root / "sys" / "kernel" / "random"
+    base.mkdir(parents=True, exist_ok=True)
+    (base / "boot_id").write_text(f"{boot_id_with_dashes}\n")
+
+
 # --- A15: CPU thermal throttle counters + topology --------------------------------
 
 

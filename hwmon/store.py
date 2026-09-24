@@ -103,6 +103,14 @@ class Store:
             )
             """
         )
+        # Deliverables SPEC.md: a tiny generic key/value table for small
+        # persisted counters that don't warrant their own table -- currently
+        # just the journal-query failure streak behind `journal_unavailable`
+        # (R-L3.1). Deliberately NOT reused for anything `events`-shaped
+        # (per-boot markers use `events` + `has_event_kind_for_boot` below,
+        # matching A17/B2's existing dedupe idiom instead of inventing a
+        # second one).
+        self._conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         self._conn.commit()
 
     def _migrate_add_column(self, table: str, column: str, sql_type: str) -> None:
@@ -238,6 +246,34 @@ class Store:
     def existing_event_ts_starts(self) -> set[float]:
         cur = self._conn.execute("SELECT ts_start FROM events")
         return {row[0] for row in cur.fetchall()}
+
+    def has_event_kind_for_boot(self, kind: str, boot_id: str) -> bool:
+        """Deliverables SPEC.md: the per-boot dedupe used by the critical-
+        battery marker (R-L1.4) and the hibernate backstop (R-L1.5) --
+        "has THIS kind already been recorded for THIS boot?" -- the same
+        `events` table A17/B2 already uses, just queried by `(kind,
+        boot_id)` instead of `ts_start`."""
+        cur = self._conn.execute("SELECT 1 FROM events WHERE kind = ? AND boot_id = ? LIMIT 1", (kind, boot_id))
+        return cur.fetchone() is not None
+
+    # --- generic small persisted counters (meta) --------------------------------------
+
+    def get_meta_int(self, key: str, default: int = 0) -> int:
+        cur = self._conn.execute("SELECT value FROM meta WHERE key = ?", (key,))
+        row = cur.fetchone()
+        if row is None:
+            return default
+        try:
+            return int(row[0])
+        except (TypeError, ValueError):
+            return default
+
+    def set_meta_int(self, key: str, value: int) -> None:
+        self._conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, str(value)),
+        )
+        self._conn.commit()
 
     def list_events(
         self, days: float, now: float

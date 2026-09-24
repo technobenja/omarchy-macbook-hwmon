@@ -140,6 +140,62 @@ class ShapeValidationTests(unittest.TestCase):
         errors = snapshot.validate_shape(broken, self.fixture)
         self.assertEqual(errors, [])
 
+    def test_recovery_missing_key_fails(self) -> None:
+        # M-v4: schema 2 -> 3 adds `recovery` (R-L4.1, deliverables SPEC.md).
+        broken = copy.deepcopy(self.fixture)
+        del broken["recovery"]
+        errors = snapshot.validate_shape(broken, self.fixture)
+        self.assertTrue(any("recovery" in e for e in errors))
+
+    def test_recovery_exact_key_set_required(self) -> None:
+        broken = copy.deepcopy(self.fixture)
+        broken["recovery"]["bogus"] = 1
+        errors = snapshot.validate_shape(broken, self.fixture)
+        self.assertTrue(any("recovery.bogus" in e for e in errors))
+
+    def test_recovery_home_snapshot_age_s_is_nullable(self) -> None:
+        # `not_configured`/`unknown` states carry a null age (R-L4.1).
+        broken = copy.deepcopy(self.fixture)
+        broken["recovery"]["home_snapshot_state"] = "not_configured"
+        broken["recovery"]["home_snapshot_age_s"] = None
+        errors = snapshot.validate_shape(broken, self.fixture)
+        self.assertEqual(errors, [])
+
+    def test_recovery_home_snapshot_state_wrong_type_fails(self) -> None:
+        broken = copy.deepcopy(self.fixture)
+        broken["recovery"]["home_snapshot_state"] = 123
+        errors = snapshot.validate_shape(broken, self.fixture)
+        self.assertTrue(any("recovery.home_snapshot_state" in e for e in errors))
+
+    def test_schema_is_3(self) -> None:
+        self.assertEqual(self.fixture["schema"], 3)
+
+    def test_recovery_upower_missing_key_fails(self) -> None:
+        # Fix pass (deliverables SPEC.md §11 R3): recovery.upower.
+        broken = copy.deepcopy(self.fixture)
+        del broken["recovery"]["upower"]
+        errors = snapshot.validate_shape(broken, self.fixture)
+        self.assertTrue(any("recovery.upower" in e for e in errors))
+
+    def test_recovery_upower_exact_key_set_required(self) -> None:
+        broken = copy.deepcopy(self.fixture)
+        broken["recovery"]["upower"]["bogus"] = 1
+        errors = snapshot.validate_shape(broken, self.fixture)
+        self.assertTrue(any("recovery.upower.bogus" in e for e in errors))
+
+    def test_recovery_upower_pct_fields_are_nullable(self) -> None:
+        # "unknown" state carries null upower_pct/sysfs_pct.
+        broken = copy.deepcopy(self.fixture)
+        broken["recovery"]["upower"] = {"state": "unknown", "upower_pct": None, "sysfs_pct": None}
+        errors = snapshot.validate_shape(broken, self.fixture)
+        self.assertEqual(errors, [])
+
+    def test_recovery_upower_state_wrong_type_fails(self) -> None:
+        broken = copy.deepcopy(self.fixture)
+        broken["recovery"]["upower"]["state"] = 123
+        errors = snapshot.validate_shape(broken, self.fixture)
+        self.assertTrue(any("recovery.upower.state" in e for e in errors))
+
 
 class DynamicLabelMapStructuralCheckTests(unittest.TestCase):
     """Corrected 2026-09-23 (spec A3 dated note): `temps` and `cpu.cores_c`

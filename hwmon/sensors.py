@@ -586,6 +586,23 @@ def read_cpu_throttle(sysfs_root: Path) -> dict:
     return {"core_count": core_total, "package_count": package_total}
 
 
+# --- current boot id (deliverables SPEC.md: per-boot dedupe for the
+# critical-battery marker, the hibernate backstop, and the journal-
+# unavailable counter) -----------------------------------------------------------
+
+
+def read_boot_id(procfs_root: Path) -> str | None:
+    """`/proc/sys/kernel/random/boot_id`, DASHES STRIPPED so it compares
+    equal to journald's own `_BOOT_ID` field (measured live 2026-09-23: the
+    kernel file reads `77091d3f-9009-4084-b893-ba51d05dab0c`, the journal's
+    boot 0 id is `77091d3f90094084b893ba51d05dab0c` -- same UUID, only the
+    formatting differs)."""
+    text = read_text(procfs_root / "sys" / "kernel" / "random" / "boot_id")
+    if text is None:
+        return None
+    return text.replace("-", "")
+
+
 def compute_throttle_recent(
     prev_core_count: int | None,
     prev_package_count: int | None,

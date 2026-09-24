@@ -379,5 +379,19 @@ class CpuFreqTests(TempRootTestCase):
         self.assertIsNone(sensors.read_core_freq_mhz(self.sysfs, 7))
 
 
+class BootIdTests(TempRootTestCase):
+    """Deliverables SPEC.md: per-boot dedupe for R-L1.4/R-L1.5/R-L3.1 --
+    dashes stripped so this compares equal to journald's own `_BOOT_ID`."""
+
+    def test_dashes_are_stripped_to_match_the_real_measured_boot_0_id(self) -> None:
+        # The exact pair measured live 2026-09-23 (kernel file vs. journald
+        # _BOOT_ID for the same boot) -- see poweroff_2026-09-23/boots.json.
+        fakefs.write_boot_id(self.procfs, "77091d3f-9009-4084-b893-ba51d05dab0c")
+        self.assertEqual(sensors.read_boot_id(self.procfs), "77091d3f90094084b893ba51d05dab0c")
+
+    def test_missing_file_returns_none(self) -> None:
+        self.assertIsNone(sensors.read_boot_id(self.procfs))
+
+
 if __name__ == "__main__":
     unittest.main()

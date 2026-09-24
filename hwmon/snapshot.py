@@ -23,10 +23,11 @@ from pathlib import Path
 
 from . import sensors
 
+# v4 delta (deliverables SPEC.md, R-L4.1): schema 2 -> 3, adding `recovery`.
 # v3 delta, M8: schema 1 -> 2 (A13 power_guard, A14 fan.target_rpm/control,
 # A15 cpu.throttle). The widget treats any schema other than the current one
 # as not-live (A9), so the collector and the bar widget ship together.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DEFAULT_DISK_DEVICE = "sda"
 DEFAULT_RUN_ROOT = Path("/run")
 
@@ -34,6 +35,19 @@ DEFAULT_RUN_ROOT = Path("/run")
 #: `power_guard` reading (e.g. a test building a snapshot with no busctl
 #: involved at all). `blockers` is always a list, never null (S7).
 _NULL_POWER_GUARD: dict = {"sleep_blocked": None, "blockers": []}
+
+#: R-L4.1 (deliverables SPEC.md): the placeholder used when the caller
+#: doesn't supply a live `recovery` reading. Deliberately the SAME value a
+#: real machine with no `home` snapper config reports (recovery.py's
+#: `STATE_NOT_CONFIGURED`) -- a snapshot built with no recovery.RecoveryCache
+#: involved at all (most tests) must never look "stale"/red by accident.
+#: `upower` (§11 R3, the fix pass) defaults to "unknown" for the same
+#: reason -- never a stale "ok"/"divergent" presented as current.
+_NULL_RECOVERY: dict = {
+    "home_snapshot_state": "not_configured",
+    "home_snapshot_age_s": None,
+    "upower": {"state": "unknown", "upower_pct": None, "sysfs_pct": None},
+}
 
 # Keys that must always be present and non-null (everything else is nullable
 # per A2: "Every leaf is nullable (null = could not read) except schema and ts").
@@ -43,7 +57,7 @@ _NON_NULLABLE = frozenset({"schema", "ts"})
 # tests/test_snapshot_shape.py. Do not hand-edit this without also updating
 # (or checking against) the fixture — they are asserted equal.
 _REFERENCE_SNAPSHOT: dict = {
-    "schema": 2,
+    "schema": 3,
     "ts": 1790179200.0,
     "battery": {
         "pct": 81,
@@ -122,6 +136,11 @@ _REFERENCE_SNAPSHOT: dict = {
         "disk": {"device": "sda", "read_bps": 0.0, "write_bps": 40960.0},
         "net": {"iface": "wlp3s0", "rx_bps": 1520.0, "tx_bps": 880.0},
     },
+    "recovery": {
+        "home_snapshot_state": "fresh",
+        "home_snapshot_age_s": 1800.0,
+        "upower": {"state": "ok", "upower_pct": 47.3, "sysfs_pct": 49},
+    },
 }
 
 
@@ -150,6 +169,7 @@ def build_snapshot(
     disk_device: str = DEFAULT_DISK_DEVICE,
     run_root: Path = DEFAULT_RUN_ROOT,
     power_guard: dict | None = None,
+    recovery: dict | None = None,
 ) -> tuple[dict, SampleState]:
     """Read every sensor and assemble one A2 snapshot.
 
@@ -164,6 +184,12 @@ def build_snapshot(
     across ticks; a pure per-sample builder has no place to keep that
     state). Omitting it (the default) yields the A13 null placeholder,
     which is what every test that doesn't care about power_guard gets.
+
+    `recovery` (R-L4.1, deliverables SPEC.md) is the same kind of
+    precomputed dict, owned by `recovery.RecoveryCache` for the same reason
+    (a `snapper` subprocess call is even heavier than `busctl`, cached at a
+    lower rate still). Omitting it yields `_NULL_RECOVERY` -- the same value
+    a real machine with no `home` config reports, never a false "stale".
     """
     ts = time.time() if now is None else now
 
@@ -255,6 +281,7 @@ def build_snapshot(
             "disk": {"device": disk_device, "read_bps": read_bps, "write_bps": write_bps},
             "net": net,
         },
+        "recovery": dict(recovery) if recovery is not None else dict(_NULL_RECOVERY),
     }
     new_state = SampleState(
         ts=ts,

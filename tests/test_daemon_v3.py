@@ -8,17 +8,40 @@ test file.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from hwmon import daemon, events, inhibitors, store
+from hwmon import backstop, daemon, events, inhibitors, store, triage
 
 from . import fakefs
 
 NOW = time.time()
+
+
+def _failing_hibernate_fn() -> bool:
+    raise AssertionError("a test must never reach a real hibernate_fn")
+
+
+def _quiet_upower_cache() -> backstop.UPowerCache:
+    # §11 R3 runs every tick regardless of hibernate_backstop -- never a
+    # real busctl call in this file.
+    return backstop.UPowerCache(read_fn=lambda: {"pct": None, "energy_full": None, "energy_full_design": None})
+
+
+#: SHOULD 3 / item 8 (review): every daemon.run() call in this module gets
+#: these -- a failing hibernate_fn, and no-op notify_fns so a real
+#: notify-send can never fire from this test file.
+_SAFE_BACKSTOP_KWARGS = dict(
+    config_loader=lambda: {"hibernate_backstop": False, "backstop_action_pct": None},
+    hibernate_fn=_failing_hibernate_fn,
+    backstop_notify_fn=lambda *a, **k: None,
+    triage_notify_fn=lambda *a, **k: None,
+)
 
 
 def _build_valid_tree(tmp: Path) -> tuple[Path, Path]:
@@ -65,6 +88,10 @@ class InhibitorCacheWiringTests(unittest.TestCase):
         self.sysfs, self.procfs = _build_valid_tree(self._tmp)
         self.state_dir = self._tmp / "state"
         self.db_path = self._tmp / "hwmon.db"
+        # SHOULD 3 (review): pin XDG_CONFIG_HOME on every daemon.run test.
+        env_patch = mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self._tmp / "xdg-config")})
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
 
     def test_power_guard_is_written_into_latest_json(self) -> None:
         rows = [["sleep", "omarchy-update", "Omarchy update in progress", "block", 0, 1]]
@@ -80,6 +107,8 @@ class InhibitorCacheWiringTests(unittest.TestCase):
             inhibitor_cache=cache,
             list_boots_fn=lambda: [],
             journal_query_fn=lambda b: [],
+            **_SAFE_BACKSTOP_KWARGS,
+            upower_cache=_quiet_upower_cache(),
         )
         snap = json.loads((self.state_dir / "latest.json").read_text())
         self.assertTrue(snap["power_guard"]["sleep_blocked"])
@@ -104,6 +133,8 @@ class InhibitorCacheWiringTests(unittest.TestCase):
             inhibitor_cache=cache,
             list_boots_fn=lambda: [],
             journal_query_fn=lambda b: [],
+            **_SAFE_BACKSTOP_KWARGS,
+            upower_cache=_quiet_upower_cache(),
         )
         # 25 ticks at interval=0.0 all happen within a fraction of a second
         # of wall-clock time, so with a 10s TTL the cache must poll ONCE.
@@ -117,6 +148,10 @@ class EventsCheckAtStartTests(unittest.TestCase):
         self.sysfs, self.procfs = _build_valid_tree(self._tmp)
         self.state_dir = self._tmp / "state"
         self.db_path = self._tmp / "hwmon.db"
+        # SHOULD 3 (review): pin XDG_CONFIG_HOME on every daemon.run test.
+        env_patch = mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self._tmp / "xdg-config")})
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
 
     def test_gap_found_at_start_is_recorded_once(self) -> None:
         # Seed a raw table with an old, unrecorded gap. `gap_end` is only a
@@ -144,6 +179,18 @@ class EventsCheckAtStartTests(unittest.TestCase):
             journal_calls.append(boot_id)
             return evidence
 
+        # A fake triage_runner: R-L3.1's own triage must never shell out for
+        # real in a test (its default reads the REAL /var/log/pacman.log and
+        # runs a REAL journalctl, neither of which this test controls).
+        triage_calls = []
+
+        def fake_triage_runner(record, boots):
+            triage_calls.append(record.boot_id)
+            return triage.TriageReport(
+                severity="info", pacman_interrupted=None, pacman_lock_stale=False,
+                esp_fsck_lines=[], btrfs_warning_lines=[], pacman_log_ok=True, snapshot_hint="",
+            )
+
         daemon.run(
             state_dir=self.state_dir,
             db_path=self.db_path,
@@ -155,14 +202,20 @@ class EventsCheckAtStartTests(unittest.TestCase):
             inhibitor_cache=inhibitors.InhibitorCache(poll_fn=lambda: []),
             list_boots_fn=lambda: boots,
             journal_query_fn=fake_journal,
+            triage_runner=fake_triage_runner,
+            **_SAFE_BACKSTOP_KWARGS,
+            upower_cache=_quiet_upower_cache(),
         )
 
         with store.Store(self.db_path) as st:
             rows = st.list_events(days=365, now=time.time())
-        self.assertEqual(len(rows), 1, msg=f"rows: {rows}")
-        self.assertEqual(rows[0][2], "hard_poweroff")
+        # R-L3.1: the crash event PLUS its triage report -- exactly one of each.
+        self.assertEqual(len(rows), 2, msg=f"rows: {rows}")
+        kinds = sorted(r[2] for r in rows)
+        self.assertEqual(kinds, ["hard_poweroff", "triage"])
         # Journal queried once for the gap at start -- not once per tick.
         self.assertEqual(journal_calls, ["boot-x"])
+        self.assertEqual(triage_calls, ["boot-x"])
 
     def test_s4_second_start_is_idempotent_events_count_stays_1_journal_not_recalled(self) -> None:
         # S4 (advisor): a second daemon start against the SAME db (e.g. a
@@ -191,6 +244,15 @@ class EventsCheckAtStartTests(unittest.TestCase):
             journal_calls.append(boot_id)
             return evidence
 
+        triage_calls: list[str] = []
+
+        def fake_triage_runner(record, boots):
+            triage_calls.append(record.boot_id)
+            return triage.TriageReport(
+                severity="info", pacman_interrupted=None, pacman_lock_stale=False,
+                esp_fsck_lines=[], btrfs_warning_lines=[], pacman_log_ok=True, snapshot_hint="",
+            )
+
         run_kwargs = dict(
             state_dir=self.state_dir,
             db_path=self.db_path,
@@ -202,14 +264,18 @@ class EventsCheckAtStartTests(unittest.TestCase):
             inhibitor_cache=inhibitors.InhibitorCache(poll_fn=lambda: []),
             list_boots_fn=lambda: boots,
             journal_query_fn=fake_journal,
+            triage_runner=fake_triage_runner,
+            upower_cache=_quiet_upower_cache(),
+            **_SAFE_BACKSTOP_KWARGS,
         )
 
-        # First "daemon start" -- backfills and records the event.
+        # First "daemon start" -- backfills and records the event (+ triage).
         daemon.run(**run_kwargs)
         with store.Store(self.db_path) as st:
             rows_after_first = st.list_events(days=365, now=time.time())
-        self.assertEqual(len(rows_after_first), 1)
+        self.assertEqual(len(rows_after_first), 2)
         self.assertEqual(journal_calls, ["boot-y"])
+        self.assertEqual(triage_calls, ["boot-y"])
 
         # Second "daemon start" -- e.g. a restart. The raw gap is still
         # there (raw retention is 24h; this gap is only 2h old), and the
@@ -218,9 +284,12 @@ class EventsCheckAtStartTests(unittest.TestCase):
         daemon.run(**run_kwargs)
         with store.Store(self.db_path) as st:
             rows_after_second = st.list_events(days=365, now=time.time())
-        self.assertEqual(len(rows_after_second), 1, msg=f"event count must stay at 1, got {rows_after_second}")
+        self.assertEqual(len(rows_after_second), 2, msg=f"event count must stay at 2, got {rows_after_second}")
         self.assertEqual(
             journal_calls, ["boot-y"], msg="journal must not be re-queried on the second start for an already-recorded gap"
+        )
+        self.assertEqual(
+            triage_calls, ["boot-y"], msg="triage must not re-run on the second start for an already-recorded gap"
         )
 
     def test_check_disabled_by_flag_does_not_touch_events_table(self) -> None:
@@ -252,6 +321,8 @@ class EventsCheckAtStartTests(unittest.TestCase):
             inhibitor_cache=inhibitors.InhibitorCache(poll_fn=lambda: []),
             list_boots_fn=record_call,
             check_events_at_start=False,
+            **_SAFE_BACKSTOP_KWARGS,
+            upower_cache=_quiet_upower_cache(),
         )
         self.assertEqual(calls, [], msg="list_boots_fn must not be called when check_events_at_start=False")
 
@@ -269,6 +340,8 @@ class EventsCheckAtStartTests(unittest.TestCase):
             install_signal_handlers=False,
             inhibitor_cache=inhibitors.InhibitorCache(poll_fn=lambda: []),
             list_boots_fn=lambda: None,  # simulated journalctl failure
+            **_SAFE_BACKSTOP_KWARGS,
+            upower_cache=_quiet_upower_cache(),
         )
         self.assertEqual(n, 1, "the collector loop must still run a tick")
 
