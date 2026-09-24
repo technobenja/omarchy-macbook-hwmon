@@ -139,7 +139,7 @@ _REFERENCE_SNAPSHOT: dict = {
     "recovery": {
         "home_snapshot_state": "fresh",
         "home_snapshot_age_s": 1800.0,
-        "upower": {"state": "ok", "upower_pct": 47.3, "sysfs_pct": 49},
+        "upower": {"state": "ok", "upower_pct": 47.3, "sysfs_pct": 49.0},
     },
 }
 

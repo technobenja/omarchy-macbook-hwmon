@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "techno.hwmon",
   "name": "hwmon",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": "techno",
   "description": "CPU package temperature and fan speed in the bar; battery, fan, SMC sensors and system stats in a two-page popup. Reads $XDG_RUNTIME_DIR/hwmon/latest.json written by hwmon.service.",
   "kinds": ["bar-widget"],

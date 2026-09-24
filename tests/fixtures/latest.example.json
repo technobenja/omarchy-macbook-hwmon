@@ -128,7 +128,7 @@
     "upower": {
       "state": "ok",
       "upower_pct": 47.3,
-      "sysfs_pct": 49
+      "sysfs_pct": 49.0
     }
   }
 }

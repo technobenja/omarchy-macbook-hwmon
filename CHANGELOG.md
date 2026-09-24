@@ -4,7 +4,38 @@ Semver. The version lives in three places that must agree:
 `hwmon/__init__.py` (`__version__`), `plugin/techno.hwmon/manifest.json`
 (`version`), and this file.
 
-## Unreleased
+## 1.2.0 — 2026-09-24
+
+Recovery v4: the hwmon half of the omarchy hard-power-loss recovery spec
+(deliverables `omarchy-power-loss-recovery/SPEC.md`, §10 + §11 R). Spec,
+advisor review, two build agents, three code-review rounds (one BLOCK), a
+pre-deploy Fable advisor GO-WITH-CONDITIONS and a live isolated smoke test.
+425 Python tests + 615 widget tests.
+
+- **Snapshot schema 2 → 3**: adds `recovery` = `home_snapshot_state`,
+  `home_snapshot_age_s`, `upower {state, upower_pct, sysfs_pct}`. The widget
+  accepts schema 3 only.
+- **Critical-battery marker**: at `Discharging && capacity <= 5`, one
+  warning-priority journal line and a journal sync, once per boot.
+- **Hibernate backstop** (off unless `~/.config/hwmon/config.json` sets
+  `hibernate_backstop: true` and a valid `backstop_action_pct`): sysfs
+  `capacity <= action - 2` held 20 samples, `PreparingForSleep` guard, refuses
+  on a block inhibitor or `CanHibernate != yes`; records `backstop_hibernate`
+  only when the logind call succeeds. Never reads UPower.
+- **UPower divergence check**: UPower's percentage vs sysfs
+  `charge_now/charge_full`, plus `EnergyFull/EnergyFullDesign > 1.2`; a
+  sustained mismatch records `upower_divergent` once per boot and warns the bar.
+- **Post-crash triage**: after a `hard_poweroff`/`unclean_shutdown` event, one
+  read-only report (interrupted pacman transaction, stale lock, ESP fsck and
+  btrfs lines quoted) and one notification; `journal_unavailable` when the
+  journal cannot be read (never reported as clean).
+- **Home snapshot age**: `snapper -c home list`, `not_configured` until a
+  home config exists.
+- Widget: System page RECOVERY rows; the bar warns on stale home snapshots
+  or UPower divergence.
+- Also unreleased before this: public release on GitHub (below).
+
+## Unreleased (folded into 1.2.0)
 
 - Public release on GitHub (`technobenja/omarchy-macbook-hwmon`): MIT
   license, README install/requirements for GitHub, mbpfan note; lab-specific

@@ -540,7 +540,9 @@ def sysfs_pct_on_upower_scale(battery: dict) -> float | None:
     now, full = battery.get("charge_now_ah"), battery.get("charge_full_ah")
     if isinstance(now, (int, float)) and isinstance(full, (int, float)) and full > 0:
         return round(now / full * 100, 2)
-    return battery.get("pct")
+    pct = battery.get("pct")
+    # Float on both paths: the snapshot contract types sysfs_pct as float.
+    return float(pct) if isinstance(pct, (int, float)) and not isinstance(pct, bool) else None
 
 def compute_upower_divergence(
     *,
