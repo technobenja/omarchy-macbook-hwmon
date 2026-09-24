@@ -48,8 +48,13 @@ to `hwmon —` instead of showing an old number as current.
 
 ## Install
 
+**Requirements:** [Omarchy](https://omarchy.org/) (the omarchy-shell bar), a
+Mac with the `applesmc` kernel module loaded, Python 3 (standard library
+only), `systemd --user`. Built and tested on a MacBook Pro 11,1 (Late 2013,
+13"); other `applesmc` Macs may work but are untested.
+
 ```bash
-git clone http://gitea.lab:3000/techno/hwmon.git ~/dev/hwmon
+git clone https://github.com/technobenja/omarchy-macbook-hwmon.git ~/dev/hwmon
 ~/dev/hwmon/install.sh
 ```
 
@@ -122,6 +127,13 @@ The defaults are `$XDG_RUNTIME_DIR/hwmon/latest.json` and
 use; the overrides exist mainly for testing against a scratch directory
 without touching real state.
 
+## Fan control on Macs (recommended companion)
+
+hwmon only *monitors*. On this MacBook the SMC's automatic mode never raised
+the fan above ~1,300 RPM, even at 87 °C under Linux (`hwmon fancurve` shows
+it). Installing [`mbpfan`](https://github.com/linux-on-mac/mbpfan) fixed it;
+hwmon then shows `Control: mbpfan` and the target vs actual RPM.
+
 ## Scope
 
 Monitoring only. It never writes to the fan or any other hardware control,
@@ -141,3 +153,7 @@ systemd/hwmon.service              user service (built)
 install.sh                         install / uninstall
 bin/hwmon                          thin launcher installed to ~/.local/bin/hwmon
 ```
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).

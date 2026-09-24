@@ -4,6 +4,12 @@ Semver. The version lives in three places that must agree:
 `hwmon/__init__.py` (`__version__`), `plugin/techno.hwmon/manifest.json`
 (`version`), and this file.
 
+## Unreleased
+
+- Public release on GitHub (`technobenja/omarchy-macbook-hwmon`): MIT
+  license, README install/requirements for GitHub, mbpfan note; lab-specific
+  references and the fixture's machine-id removed. No code changes.
+
 ## 1.1.0 — 2026-09-23
 
 Spec v3 delta (items 1–6) as amended by two Fable advisor reviews (spec

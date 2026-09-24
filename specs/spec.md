@@ -4,9 +4,8 @@
 local model in OpenCode and never built; its shape is kept, its platform
 assumptions are corrected against the machine (measured 2026-09-23, below).
 
-Decisions (Ben, 2026-09-23): **a module in the omarchy-shell bar next to the
-battery + the `hwmon` CLI is enough.** No tray app, no history window. Push to
-Gitea (`techno/hwmon`).
+Decisions (owner, 2026-09-23): **a module in the omarchy-shell bar next to the
+battery + the `hwmon` CLI is enough.** No tray app, no history window.
 
 ## Measured on this machine (2026-09-23) — the ground truth this spec builds on
 
@@ -131,7 +130,7 @@ from `Color.*` / `bar.foreground` — none hard-coded. The widget declares
 `ipcTarget: "techno.hwmon"` with a `state()` method returning `{label, stale,
 age_s}` so checks can read what the bar is actually showing.
 
-**A7 — Widget popup (two pages, per Ben 2026-09-22 "prioritize low level stats
+**A7 — Widget popup (two pages, per the owner, 2026-09-22 "prioritize low level stats
 and offer a high level on another page").** Built on the first-party pattern
 (read `/usr/share/omarchy/shell/plugins/panels/power/Panel.qml` and
 `.../agents/Panel.qml`): root is `qs.Ui` `Panel` + `BarIconButton` +
@@ -197,7 +196,7 @@ the unit, remove the plugin dir and CLI. **Keeps `hwmon.db`** unless
 
 ## REMOVED (from v1)
 
-- **R1** PyQt5 tray app and pyqtgraph history window (Ben: bar + CLI is enough).
+- **R1** PyQt5 tray app and pyqtgraph history window (the owner: bar + CLI is enough).
 - **R2** HTTP server on `127.0.0.1:8936`. Its only consumers were Waybar and the
   tray app; both are gone, and the file-watch path is the shell's native idiom.
   No listening socket = nothing to secure.
@@ -241,8 +240,8 @@ the unit, remove the plugin dir and CLI. **Keeps `hwmon.db`** unless
    with an injected clock on a throwaway DB, never by waiting.
 
 ## Non-goals
-Fan control (writing `fan1_manual`/`fan1_output`); any network egress or OB2
-push; root-only sensors; Waybar support.
+Fan control (writing `fan1_manual`/`fan1_output`); any network egress or push to
+external services; root-only sensors; Waybar support.
 
 ## Repo layout
 
@@ -268,9 +267,9 @@ hwmon/
 
 # v3 delta — 2026-09-23 (fan/battery findings)
 
-Scope approved by Ben 2026-09-23: items 1–6 of the post-mbpfan review. Item 7
+Scope approved by the owner 2026-09-23: items 1–6 of the post-mbpfan review. Item 7
 (power profile on the System page) **REMOVED — `omarchy.power` already shows
-it** (Ben). Background, measured today: the SMC never raised the fan above
+it** (the owner). Background, measured today: the SMC never raised the fan above
 ~1320 RPM at 40–87 °C; a manual 4000 RPM override reached 4259 RPM (fan
 hardware good); `mbpfan` 2.4.0 now controls the fan (`fan1_manual=1`,
 `/run/mbpfan.pid`); the 09:36 battery death was a hard power-off (dirty FAT
@@ -426,7 +425,7 @@ RPM at 75 °C). Redefine "cooling saturated" as fan ≥ 0.95 × max **sustained
 ≥ 60 s**; it is expected to be rare. Acceptance 14's 5950 RPM / 84 °C case is
 **fixture-only** (mbpfan cannot produce it).
 
-**S6 → acceptance 12 corrected.** Before 15:31 PDT the data includes Ben's
+**S6 → acceptance 12 corrected.** Before 15:31 PDT the data includes the owner's
 manual 4000 RPM test (15:22:32–15:23:16, max 4259). `hwmon fancurve` groups by
 `fan.control` (v2 rows: derived from `fan.manual`), and check 12 expects: SMC
 rows flat ~1300 except the manual window; mbpfan rows (after 15:31:42) rising
@@ -456,7 +455,7 @@ Verified **live** on omarchy (with positive controls):
   opened on the System page and a synthetic key press didn't switch) —
   verified in the harness only.
 - 10: `fan.control == "mbpfan"`, target 2969 vs actual 2968 RPM.
-- 11: **real throttling during Ben's stress runs**: package temp 99 °C at
+- 11: **real throttling during the owner's stress runs**: package temp 99 °C at
   16:53:34 PDT, `throttle.recent` true from the first event; counters
   package 58 on each CPU / core 49 & 9 aggregated to 58 / 58 (naive sum
   would be 232).
@@ -466,7 +465,7 @@ Verified **live** on omarchy (with positive controls):
   last_pct 2, boot 77091d3f…, "Dirty bit is set…"` into `events` — now
   persistent past 24 h raw retention.
 - 6: collector steady state **0.92 %** of one core over 480 s (`/proc` delta,
-  same method as v2's 0.89 %; window overlapped Ben's stress runs), RSS
+  same method as v2's 0.89 %; window overlapped the owner's stress runs), RSS
   24.9 MB.
 
 Notes: acceptance 14's "30 s → not warn" holds for the saturation rule
