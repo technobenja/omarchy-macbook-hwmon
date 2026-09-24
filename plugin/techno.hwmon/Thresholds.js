@@ -130,6 +130,16 @@ function saturationLevel(tracker, snapshot) {
   return held !== null && held >= SATURATION_SUSTAIN_S ? "warn" : "normal"
 }
 
+// ---------------------------------------------------------------- v4 recovery
+
+// warn when local history has stopped (R-L4.1) or UPower's battery reading
+// disagrees with the kernel's (spec §11 R3). "unknown" / "not_configured"
+// stay normal: they are shown in the popup, not raised in the bar.
+function recoveryLevel(snapshot) {
+  return read(snapshot, ["recovery", "home_snapshot_state"]) === "stale"
+      || read(snapshot, ["recovery", "upower", "state"]) === "divergent" ? "warn" : "normal"
+}
+
 // ---------------------------------------------------------------- worst
 
 function worse(a, b) {
@@ -144,5 +154,6 @@ function worstLevel(snapshot, tracker) {
   worst = worse(worst, guardLevel(snapshot))
   worst = worse(worst, throttleLevel(snapshot))
   worst = worse(worst, saturationLevel(tracker || null, snapshot))
+  worst = worse(worst, recoveryLevel(snapshot))
   return worst
 }

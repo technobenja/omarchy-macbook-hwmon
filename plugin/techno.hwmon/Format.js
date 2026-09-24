@@ -10,7 +10,7 @@
 
 var DASH = "–"                  // "–" : a null reading, in its slot
 var STALE_LABEL = "hwmon —"     // "hwmon —" : missing or stale snapshot (A9)
-var SCHEMA = 2                  // v3 M8: any other schema is not live (A9)
+var SCHEMA = 3                  // v4 (recovery key): any other schema is not live (A9)
 
 function get(obj, path) {
   var parts = String(path).split(".")
@@ -50,7 +50,7 @@ function compactLabel(snapshot, vertical) {
 // ---------------------------------------------------------------- staleness
 
 // loadState: "pending" (no read attempted yet), "missing" (file absent /
-// unreadable), "invalid" (read, but not a schema-2 snapshot), "loaded".
+// unreadable), "invalid" (read, but not a schema-3 snapshot), "loaded".
 // Returns { kind: "ok"|"missing"|"invalid"|"stale", age_s, headline, detail }.
 // age_s is null whenever there is no usable timestamp.
 function status(snapshot, loadState, nowMs, staleAfterS, loadError) {
@@ -286,4 +286,27 @@ function guardBanner(snapshot) {
 // A15: "yes" / "no" / "–" (recent is null on the collector's first sample, S7).
 function throttleRecent(snapshot) {
   return bool(get(snapshot, "cpu.throttle.recent"), "yes", "no")
+}
+
+// ---------------------------------------------------------------- v4 recovery
+// recovery.home_snapshot_state: not_configured | unknown | fresh | stale.
+// "unknown" means hwmon could not ask snapper; it is never shown as fresh.
+function homeSnapshots(snapshot) {
+  var state = get(snapshot, "recovery.home_snapshot_state")
+  var age = get(snapshot, "recovery.home_snapshot_age_s")
+  if (state === "fresh" || state === "stale")
+    return (state === "stale" ? "STALE · " : "") + ageText(age) + " ago"
+  if (state === "not_configured") return "not set up"
+  if (state === "unknown") return "could not check"
+  return DASH
+}
+
+// recovery.upower: {state: ok | divergent | unknown, upower_pct, sysfs_pct}.
+function upowerCheck(snapshot) {
+  var state = get(snapshot, "recovery.upower.state")
+  var pair = pct(get(snapshot, "recovery.upower.upower_pct"), 1) + " vs " + pct(get(snapshot, "recovery.upower.sysfs_pct"), 1)
+  if (state === "ok") return "agrees · " + pair
+  if (state === "divergent") return "DISAGREES · " + pair
+  if (state === "unknown") return "could not check"
+  return DASH
 }

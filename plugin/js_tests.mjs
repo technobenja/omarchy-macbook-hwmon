@@ -1,5 +1,5 @@
 // Node tests for the pure JS half of techno.hwmon (Format.js, Thresholds.js)
-// against the schema-2 contract, tests/fixtures/latest.example.json.
+// against the schema-3 contract, tests/fixtures/latest.example.json.
 //
 //   node plugin/js_tests.mjs            # exit 0 = all pass
 //
@@ -85,12 +85,12 @@ const HOT = { "fan.max_rpm": 6199, "cpu.package_c": 84, "cpu.throttle.recent": f
 {
   const r = F.parse(FIXTURE_TEXT)
   eq("fixture parses as loaded", r.state, "loaded")
-  eq("fixture schema is 2", r.snapshot.schema, 2)
+  eq("fixture schema is 3", r.snapshot.schema, 3)
   const st = F.status(r.snapshot, r.state, (r.snapshot.ts + 0.4) * 1000, T.STALE_AFTER_S, r.error)
   eq("fixture is live", st.kind, "ok")
   eq("fixture label", F.barLabel(st, r.snapshot, false), "59° 1.3k")
 
-  for (const bad of [1, 3, "2", null, undefined]) {
+  for (const bad of [1, 2, 4, "3", null, undefined]) {
     const o = fixture(); if (bad === undefined) delete o.schema; else o.schema = bad
     const p = F.parse(JSON.stringify(o))
     eq("schema " + String(bad) + " -> invalid", p.state, "invalid")
@@ -251,6 +251,26 @@ const HOT = { "fan.max_rpm": 6199, "cpu.package_c": 84, "cpu.throttle.recent": f
   ok("blockers array of junk", () => renderAll(snap({ "power_guard.blockers": [1, "a", null, [], { who: 5 }] }), null))
   eq("sleep_blocked null -> row –", F.bool(F.get(snap({ "power_guard.sleep_blocked": null }), "power_guard.sleep_blocked"), "yes", "no"), "–")
   eq("throttle branch null -> counts –", F.intText(F.get(snap({ "cpu.throttle": null }), "cpu.throttle.core_count")), "–")
+}
+
+// ------------------------------------------------ v4 recovery
+{
+  eq("fixture recovery -> normal", T.recoveryLevel(fixture()), "normal")
+  eq("fixture home -> age", F.homeSnapshots(fixture()), "30 min 0 s ago")
+  eq("fixture upower -> agrees", F.upowerCheck(fixture()), "agrees · 47.3 % vs 49.0 %")
+  // positive controls: each signal alone raises the bar to warn
+  eq("home stale -> warn", T.recoveryLevel(snap({ "recovery.home_snapshot_state": "stale", "recovery.home_snapshot_age_s": 9000 })), "warn")
+  eq("home stale text", F.homeSnapshots(snap({ "recovery.home_snapshot_state": "stale", "recovery.home_snapshot_age_s": 9000 })), "STALE · 2 h 30 min ago")
+  eq("upower divergent -> warn", T.recoveryLevel(snap({ "recovery.upower.state": "divergent", "recovery.upower.upower_pct": 3.27, "recovery.upower.sysfs_pct": 31.34 })), "warn")
+  eq("upower divergent text", F.upowerCheck(snap({ "recovery.upower.state": "divergent", "recovery.upower.upower_pct": 3.27, "recovery.upower.sysfs_pct": 31.34 })), "DISAGREES · 3.3 % vs 31.3 %")
+  eq("divergent reaches worstLevel", T.worstLevel(snap({ "recovery.upower.state": "divergent" }), null) !== "normal", true)
+  // three states: could-not-check and not-set-up are shown, never raised, never "fresh"
+  for (const st of ["unknown", "not_configured"]) eq("home " + st + " -> normal", T.recoveryLevel(snap({ "recovery.home_snapshot_state": st })), "normal")
+  eq("home unknown text", F.homeSnapshots(snap({ "recovery.home_snapshot_state": "unknown", "recovery.home_snapshot_age_s": null })), "could not check")
+  eq("home not_configured text", F.homeSnapshots(snap({ "recovery.home_snapshot_state": "not_configured", "recovery.home_snapshot_age_s": null })), "not set up")
+  eq("upower unknown text", F.upowerCheck(snap({ "recovery.upower.state": "unknown" })), "could not check")
+  eq("recovery null -> dashes", F.homeSnapshots(snap({ "recovery": null })) + "|" + F.upowerCheck(snap({ "recovery": null })), "–|–")
+  eq("recovery null -> normal", T.recoveryLevel(snap({ "recovery": null })), "normal")
 }
 
 console.log(`${passed} passed, ${failures.length} failed`)

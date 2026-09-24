@@ -4,7 +4,7 @@ import qs.Ui
 import "Format.js" as Format
 
 // Page 2 (A7): high-level view — load average, per-core usage + frequency,
-// RAM / swap, disk and network throughput.
+// RAM / swap, disk and network throughput, recovery checks (v4).
 Column {
   id: page
 
@@ -137,5 +137,25 @@ Column {
 
     StatRow { width: page.halfWidth; label: "Rx"; value: Format.rate(Format.get(page.net, "rx_bps")); foreground: page.foreground; fontFamily: page.fontFamily }
     StatRow { width: page.halfWidth; label: "Tx"; value: Format.rate(Format.get(page.net, "tx_bps")); foreground: page.foreground; fontFamily: page.fontFamily }
+  }
+
+  PanelSeparator { foreground: page.foreground }
+
+  // ---------- Recovery (v4) ----------
+  PanelSectionHeader {
+    text: "RECOVERY"
+    foreground: page.foreground
+    fontFamily: page.fontFamily
+  }
+
+  StatRow {
+    width: parent.width; label: "Home snapshots"
+    value: Format.homeSnapshots(page.snapshot)
+    foreground: page.foreground; fontFamily: page.fontFamily
+  }
+  StatRow {
+    width: parent.width; label: "UPower vs battery"
+    value: Format.upowerCheck(page.snapshot)
+    foreground: page.foreground; fontFamily: page.fontFamily
   }
 }
