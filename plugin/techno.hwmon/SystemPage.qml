@@ -154,7 +154,7 @@ Column {
     foreground: page.foreground; fontFamily: page.fontFamily
   }
   StatRow {
-    width: parent.width; label: "UPower vs battery"
+    width: parent.width; label: "UPower check"
     value: Format.upowerCheck(page.snapshot)
     foreground: page.foreground; fontFamily: page.fontFamily
   }

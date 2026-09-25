@@ -29,7 +29,7 @@ to `hwmon —` instead of showing an old number as current.
   label. Sensors the SMC reports as absent (`-127 °C` and similar) are counted,
   not hidden.
 - **System** — load, per-core usage and frequency, RAM/swap, SSD read/write,
-  network throughput, and **RECOVERY**: home snapshots, UPower vs battery, NAS
+  network throughput, and **RECOVERY**: home snapshots, UPower check, NAS
   backup (see [`RUNBOOK.md`](RUNBOOK.md) for every state).
 
 ## How it works

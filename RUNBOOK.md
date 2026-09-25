@@ -40,7 +40,7 @@ accent**, **critical = bar urgent**:
 | | `configured, none yet` | `empty` — snapper `home` config exists, no snapshot yet | normal |
 | | `not set up` | `not_configured` — no `/etc/snapper/configs/home` | normal |
 | | `could not check` | `unknown` — snapper failed (e.g. "No permissions") | normal |
-| UPower vs battery | `agrees · UPower 100.0 % / battery 100.0 %` | `ok` | normal |
+| UPower check | `agrees · UPower 100.0 % / battery 100.0 %` | `ok` | normal |
 | | `DISAGREES · UPower 3.3 % / battery 33.0 %` | `divergent` — > 5 points apart, or `EnergyFull/EnergyFullDesign` > 1.2 | warn |
 | | `could not check` | `unknown` | normal |
 | NAS backup | `2 h 4 min ago` / `STALE · 4 d 1 h ago` | `fresh` (≤ 72 h) / `stale` | normal / warn |
