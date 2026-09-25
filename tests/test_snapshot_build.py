@@ -98,7 +98,7 @@ class SnapshotBuildTests(unittest.TestCase):
         empty_sysfs = self._tmp / "sys-empty"
         empty_procfs = self._tmp / "proc-empty"
         snap, _ = snapshot.build_snapshot(empty_sysfs, empty_procfs, None, now=1000.0)
-        self.assertEqual(snap["schema"], 3)
+        self.assertEqual(snap["schema"], 4)
         self.assertEqual(snap["ts"], 1000.0)
         self.assertIsNone(snap["battery"]["pct"])
         self.assertIsNone(snap["cpu"]["package_c"])

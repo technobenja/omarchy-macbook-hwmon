@@ -23,11 +23,13 @@ from pathlib import Path
 
 from . import sensors
 
+# v5 delta (SPEC-nas-backup.md, R-N7/A-S5): schema 3 -> 4, adding
+# `recovery.nas_backup`.
 # v4 delta (deliverables SPEC.md, R-L4.1): schema 2 -> 3, adding `recovery`.
 # v3 delta, M8: schema 1 -> 2 (A13 power_guard, A14 fan.target_rpm/control,
 # A15 cpu.throttle). The widget treats any schema other than the current one
 # as not-live (A9), so the collector and the bar widget ship together.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 DEFAULT_DISK_DEVICE = "sda"
 DEFAULT_RUN_ROOT = Path("/run")
 
@@ -43,10 +45,14 @@ _NULL_POWER_GUARD: dict = {"sleep_blocked": None, "blockers": []}
 #: involved at all (most tests) must never look "stale"/red by accident.
 #: `upower` (§11 R3, the fix pass) defaults to "unknown" for the same
 #: reason -- never a stale "ok"/"divergent" presented as current.
+#: `nas_backup` (v5, SPEC-nas-backup.md R-N7) defaults to "not_configured"
+#: for the identical reason -- the same value a real machine reports before
+#: the backup job has ever run.
 _NULL_RECOVERY: dict = {
     "home_snapshot_state": "not_configured",
     "home_snapshot_age_s": None,
     "upower": {"state": "unknown", "upower_pct": None, "sysfs_pct": None},
+    "nas_backup": {"state": "not_configured", "age_s": None, "reason": None},
 }
 
 # Keys that must always be present and non-null (everything else is nullable
@@ -57,7 +63,7 @@ _NON_NULLABLE = frozenset({"schema", "ts"})
 # tests/test_snapshot_shape.py. Do not hand-edit this without also updating
 # (or checking against) the fixture — they are asserted equal.
 _REFERENCE_SNAPSHOT: dict = {
-    "schema": 3,
+    "schema": 4,
     "ts": 1790179200.0,
     "battery": {
         "pct": 81,
@@ -140,6 +146,7 @@ _REFERENCE_SNAPSHOT: dict = {
         "home_snapshot_state": "fresh",
         "home_snapshot_age_s": 1800.0,
         "upower": {"state": "ok", "upower_pct": 47.3, "sysfs_pct": 49.0},
+        "nas_backup": {"state": "fresh", "age_s": 7200.0, "reason": ""},
     },
 }
 

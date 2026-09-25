@@ -19,10 +19,19 @@ could-not-answer / never-asked):
   (the deliverables spec's D4/P2 owns creating that file, in a separate
   repo), and it MUST NOT read as stale/red (task requirement).
 - `unknown` -- the config file exists but the command failed, or its output
-  had no snapshot row to compute an age from. Measured live 2026-09-23: even
-  the pre-existing `root` config returns "No permissions." as the unprivileged user
-  (`ALLOW_USERS` is not yet set for either config) -- so `unknown` is the
-  live state for BOTH configs today, not a hypothetical.
+  is not parseable as the expected CSV shape at all (no `date` column, or a
+  data row whose date value is present but garbage). Measured live
+  2026-09-23: even the pre-existing `root` config returns "No permissions."
+  as the unprivileged user (`ALLOW_USERS` is not yet set for either config)
+  -- so `unknown` is the live state for BOTH configs today, not a
+  hypothetical.
+- `empty` -- the config exists, `snapper` ran successfully, and the CSV has
+  the expected `date` column, but every data row's date field is BLANK --
+  the shape of `snapper -c home list` when the only row is the synthetic
+  "0"/current entry, i.e. the config is set up but no snapshot has been
+  taken yet. Measured live 2026-09-24. Distinguished from `unknown` on
+  purpose: a blank date is snapper telling us "nothing yet", not a parse
+  failure, and must not be conflated with a real "could not answer".
 - a real reading: `fresh` (age_s <= `STALE_AFTER_S`) or `stale` (older).
 
 **Measured caveat:** the CSV column layout above is built from `man
@@ -51,6 +60,7 @@ from . import procutil
 
 STATE_NOT_CONFIGURED = "not_configured"
 STATE_UNKNOWN = "unknown"
+STATE_EMPTY = "empty"
 STATE_FRESH = "fresh"
 STATE_STALE = "stale"
 
@@ -108,6 +118,32 @@ def parse_newest_snapshot_ts(csv_text: str) -> float | None:
     return max(timestamps) if timestamps else None
 
 
+def _csv_all_dates_blank(csv_text: str) -> bool:
+    """True when the CSV has a `date` column and every data row's date
+    field is blank -- the measured shape of a `home` config that has run
+    but taken no snapshot yet (only the synthetic "0"/current row, whose
+    date is empty). False for a missing `date` column (that's a real parse
+    failure, `unknown`) and false for a data row with a non-blank but
+    unparseable date (also a real parse failure, not "no snapshots yet")."""
+    reader = csv.reader(io.StringIO(csv_text))
+    rows = list(reader)
+    if not rows:
+        return False
+    header = [c.strip().lower() for c in rows[0]]
+    try:
+        date_idx = header.index("date")
+    except ValueError:
+        return False
+    data_rows = rows[1:]
+    if not data_rows:
+        return True  # header with a date column, but genuinely zero rows
+    for row in data_rows:
+        raw = row[date_idx].strip() if len(row) > date_idx else ""
+        if raw:
+            return False
+    return True
+
+
 def compute_recovery_state(
     *,
     home_config_present: bool,
@@ -116,13 +152,15 @@ def compute_recovery_state(
     stale_after_s: float = STALE_AFTER_S,
 ) -> dict:
     """`{home_snapshot_state, home_snapshot_age_s}` -- pure, no I/O. See the
-    module docstring for the three states."""
+    module docstring for the four states."""
     if not home_config_present:
         return dict(_NULL_RESULT)
     if csv_text is None:
         return {"home_snapshot_state": STATE_UNKNOWN, "home_snapshot_age_s": None}
     newest_ts = parse_newest_snapshot_ts(csv_text)
     if newest_ts is None:
+        if _csv_all_dates_blank(csv_text):
+            return {"home_snapshot_state": STATE_EMPTY, "home_snapshot_age_s": None}
         return {"home_snapshot_state": STATE_UNKNOWN, "home_snapshot_age_s": None}
     age_s = max(0.0, now - newest_ts)
     state = STATE_STALE if age_s > stale_after_s else STATE_FRESH

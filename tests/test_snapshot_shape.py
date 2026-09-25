@@ -167,8 +167,8 @@ class ShapeValidationTests(unittest.TestCase):
         errors = snapshot.validate_shape(broken, self.fixture)
         self.assertTrue(any("recovery.home_snapshot_state" in e for e in errors))
 
-    def test_schema_is_3(self) -> None:
-        self.assertEqual(self.fixture["schema"], 3)
+    def test_schema_is_4(self) -> None:
+        self.assertEqual(self.fixture["schema"], 4)
 
     def test_recovery_upower_missing_key_fails(self) -> None:
         # Fix pass (deliverables SPEC.md §11 R3): recovery.upower.
@@ -195,6 +195,37 @@ class ShapeValidationTests(unittest.TestCase):
         broken["recovery"]["upower"]["state"] = 123
         errors = snapshot.validate_shape(broken, self.fixture)
         self.assertTrue(any("recovery.upower.state" in e for e in errors))
+
+    def test_recovery_nas_backup_missing_key_fails(self) -> None:
+        # v5 (SPEC-nas-backup.md R-N7): schema 3 -> 4 adds recovery.nas_backup.
+        broken = copy.deepcopy(self.fixture)
+        del broken["recovery"]["nas_backup"]
+        errors = snapshot.validate_shape(broken, self.fixture)
+        self.assertTrue(any("recovery.nas_backup" in e for e in errors))
+
+    def test_recovery_nas_backup_exact_key_set_required(self) -> None:
+        broken = copy.deepcopy(self.fixture)
+        broken["recovery"]["nas_backup"]["bogus"] = 1
+        errors = snapshot.validate_shape(broken, self.fixture)
+        self.assertTrue(any("recovery.nas_backup.bogus" in e for e in errors))
+
+    def test_recovery_nas_backup_age_s_and_reason_are_nullable(self) -> None:
+        broken = copy.deepcopy(self.fixture)
+        broken["recovery"]["nas_backup"] = {"state": "not_configured", "age_s": None, "reason": None}
+        errors = snapshot.validate_shape(broken, self.fixture)
+        self.assertEqual(errors, [])
+
+    def test_recovery_nas_backup_reason_string_is_valid(self) -> None:
+        broken = copy.deepcopy(self.fixture)
+        broken["recovery"]["nas_backup"] = {"state": "failed", "age_s": 90000.0, "reason": "nas-unreachable"}
+        errors = snapshot.validate_shape(broken, self.fixture)
+        self.assertEqual(errors, [])
+
+    def test_recovery_nas_backup_state_wrong_type_fails(self) -> None:
+        broken = copy.deepcopy(self.fixture)
+        broken["recovery"]["nas_backup"]["state"] = 123
+        errors = snapshot.validate_shape(broken, self.fixture)
+        self.assertTrue(any("recovery.nas_backup.state" in e for e in errors))
 
 
 class DynamicLabelMapStructuralCheckTests(unittest.TestCase):

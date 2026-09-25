@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from . import backstop, config, critical_marker, events, inhibitors, recovery, sensors, snapshot, store, triage
+from . import backstop, config, critical_marker, events, inhibitors, nas_backup, recovery, sensors, snapshot, store, triage
 
 DEFAULT_INTERVAL_S = 1.0
 AGGREGATE_EVERY_S = 600.0  # 10 min, per A5
@@ -416,6 +416,7 @@ def run(
     triage_runner: Callable[[events.EventRecord, list[events.BootInfo]], "triage.TriageReport"] = triage.run_triage,
     triage_notify_fn: Callable[[str, str], None] = triage.send_notification,
     recovery_cache: recovery.RecoveryCache | None = None,
+    nas_backup_cache: nas_backup.NasBackupCache | None = None,
     config_loader: Callable[[], dict] | None = None,
     critical_pct: float = critical_marker.DEFAULT_CRITICAL_PCT,
     sync_journal_fn: Callable[[], bool] = critical_marker.sync_journal,
@@ -438,7 +439,11 @@ def run(
     `hibernate_fn`, `*_notify_fn`) follow the same rule: every one of them
     defaults to the real thing, and every test that touches R-L1.4/R-L1.5/
     R-L3.1/R-L4.1 injects a fake instead -- in particular, **no test in this
-    repo ever calls a real `hibernate_fn`**.
+    repo ever calls a real `hibernate_fn`**. `nas_backup_cache` (v5,
+    SPEC-nas-backup.md R-N7) follows the same rule -- it defaults to a real
+    `nas_backup.NasBackupCache()`, which reads only the small local status
+    file (never the network, never a mount), so leaving it un-injected in a
+    test is harmless (a real, absent file simply reads `not_configured`).
 
     `config_loader` defaults to a fresh `config.ConfigCache()` -- built
     HERE, not as a bare function default, since a dataclass instance as a
@@ -449,6 +454,8 @@ def run(
         inhibitor_cache = inhibitors.InhibitorCache()
     if recovery_cache is None:
         recovery_cache = recovery.RecoveryCache()
+    if nas_backup_cache is None:
+        nas_backup_cache = nas_backup.NasBackupCache()
     if config_loader is None:
         config_loader = config.ConfigCache()
     if upower_cache is None:
@@ -524,6 +531,7 @@ def run(
 
                 recovery_state = dict(recovery_cache.get())
                 recovery_state["upower"] = divergence
+                recovery_state["nas_backup"] = nas_backup_cache.get()
                 snap, prev_state = snapshot.build_snapshot(
                     sysfs_root,
                     procfs_root,

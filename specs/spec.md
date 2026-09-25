@@ -878,3 +878,156 @@ Verified **live** after `install.sh` + collector restart + `omarchy restart shel
 Only in tests: the backstop firing path, triage after a real hard power-off,
 `upower_divergent` after 60 s. The first real battery drain started
 immediately after this deploy.
+
+---
+
+# v5 delta — 2026-09-24 (NAS backup freshness, R-N7/A-S5)
+
+Scope: `~/deliverables/omarchy-power-loss-recovery/SPEC-nas-backup.md`
+requirement **R-N7**, as superseded by its own **§9 A-S5** (the transport
+changed from NFS to `rest-server --append-only`, but hwmon's slice is
+unaffected either way: it reads only the status file a separate job writes,
+never the repo, the mount or the network). That writer job, the systemd
+timer, and the `restic` invocation are **out of this repo's scope** (a
+different repo/agent, exactly like v4's snapper `home` config was) — this
+delta covers only what hwmon itself reads and displays. Not deployed by
+this delta: no `install.sh` change, no version bump, no `systemctl`.
+
+**Contract:** `schema` becomes **4**. `tests/fixtures/latest.example.json`
+is updated first (schema 4, adding `recovery.nas_backup`) and both halves
+test against it, as in v3/v4 — the widget treats any schema other than 4 as
+not-live (existing A9 rule), so the collector and the bar widget ship
+together. As with v4, the fixture led the code: `test_snapshot_shape.py`'s
+new cases and the fixture's schema bump were committed first and were red
+(`recovery.nas_backup: unexpected key`, `test_schema_is_4`) until
+`snapshot.py`'s `_REFERENCE_SNAPSHOT`/`SCHEMA_VERSION` were updated to
+match.
+
+## ADDED
+
+**A24 — `hwmon/nas_backup.py` (R-N7).** Reads the status file the backup
+job writes: `$XDG_STATE_HOME/omarchy-recovery/nas-backup.json`, falling
+back to `~/.local/state/omarchy-recovery/nas-backup.json` (XDG default)
+when the variable is unset. Contract as handed to this module: `{ts, iso,
+result: ok|skipped|failed, reason, snapshot_id, bytes_added, files_new,
+files_changed, source_snapper, duration_s, last_ok_ts}` — this module reads
+only `result`, `reason`, `ts` and `last_ok_ts`; the rest is the writer's own
+bookkeeping. Four states, matching `feedback_absent_is_not_zero`:
+
+- `not_configured` — the status file does not exist (checked by file
+  existence, never a parse failure). MUST NOT read as stale.
+- `unknown` — the file exists but is unreadable, not valid JSON, not a JSON
+  object, or its `result` is missing/not one of `ok`/`skipped`/`failed`.
+- `failed` — the file's own last-recorded `result` is `failed`; `reason` is
+  carried through. **`skipped` alone never produces this state** — it only
+  lets `age_s` grow toward `stale` (task requirement, verbatim).
+- `fresh` (`age_s <= 72h`) or `stale` (older, OR there has never been a
+  recorded `ok` while the file exists — "no ok ever" is stale, not a
+  guessed fresh).
+
+`age_s` is computed from `last_ok_ts` when present; an `ok` row without its
+own `last_ok_ts` (yet) falls back to that row's own `ts` — an `ok` result
+**is** a last-ok event. Cached via `NasBackupCache` (mirrors
+`recovery.RecoveryCache` exactly: monotonic clock, `ttl_s=60` default,
+injectable `read_fn`), reading the one small local file at most once per 60
+s — never the network, never a mount, matching A-S5.
+
+**A25 — `recovery.nas_backup` snapshot key (schema 4).** New sub-key under
+`recovery`: `{state, age_s, reason}`. Wired in `daemon.py` exactly like
+`recovery.upower` (§11 R3's fix pass): `daemon.run()` gains an injectable
+`nas_backup_cache` parameter (default `nas_backup.NasBackupCache()`), and
+each tick merges `recovery_state["nas_backup"] = nas_backup_cache.get()`
+into the `recovery` dict passed to `snapshot.build_snapshot()`. `_NULL_RECOVERY`
+gains the same `not_configured` default so a snapshot built with no
+`NasBackupCache` involved (most tests) never looks stale/red by accident.
+
+## MODIFIED
+
+- **M9 (`recovery.py`, small related fix).** `home_snapshot_state` gains a
+  fourth state, **`empty`**: the config exists and `snapper` ran
+  successfully (a CSV with the expected `date` column), but every data
+  row's date field is blank — measured live 2026-09-24, `snapper -c home
+  list` shows only the synthetic "0"/current row before any snapshot has
+  been taken. Distinguished on purpose from `unknown` (a real parse
+  failure: no `date` column at all, or a data row with a non-blank but
+  unparseable date) via a new pure helper, `_csv_all_dates_blank()`. Level:
+  normal (shown in the popup, never raised in the bar), same as
+  `unknown`/`not_configured`.
+- **`hwmon` snapshot**: schema 3 → 4, adding `recovery.nas_backup` (A25).
+- **Widget** (`Format.js`): `SCHEMA` 3 → 4. New `nasBackup(snapshot)`
+  formatter: `"<age> ago"` (fresh) / `"STALE · <age> ago"` (stale) /
+  `"FAILED · <reason>"` or `"FAILED"` with no reason / `"not set up"`
+  (not_configured) / `"could not check"` (unknown). `homeSnapshots()` gains
+  the `empty` branch → `"set up, none yet"`. Both formatters added to
+  `js_tests.mjs`'s `renderAll()` null/missing sweep (memory lesson: assert
+  the edit applied — confirmed via `grep` before running the suite, since a
+  prior session's edit to this exact sweep silently failed to apply).
+- **Widget** (`Thresholds.js`): `recoveryLevel()` also warns when
+  `recovery.nas_backup.state` is `stale` or `failed`; `unknown` /
+  `not_configured` / `empty` stay normal.
+- **Widget** (`SystemPage.qml`): RECOVERY section gains a "NAS backup" row
+  under "UPower vs battery", reading `Format.nasBackup(snapshot)`.
+
+## REMOVED
+
+Nothing.
+
+## Acceptance (v5) — observed, each with a positive control
+
+24. WHEN the status file's last `ok` (`last_ok_ts`) is back-dated 73 h THEN
+    `recovery.nas_backup.state == "stale"` and the widget's `recoveryLevel`
+    is `warn`; **positive control:** exactly 72 h is `"fresh"`, not
+    `"stale"`.
+25. WHEN the last recorded `result` is `failed` THEN
+    `recovery.nas_backup.state == "failed"` and `reason` is carried
+    through into the widget text (`"FAILED · <reason>"`); **positive
+    control:** a `skipped` row with the same old `last_ok_ts` reads
+    `"stale"` (from age), never `"failed"` — mutation-proved (§ below).
+26. WHEN the status file does not exist THEN
+    `recovery.nas_backup.state == "not_configured"` (never `"stale"`, never
+    a warn); **positive control:** the file present but unreadable /
+    invalid JSON / missing a required key yields `"unknown"`.
+27. WHEN `/etc/snapper/configs/home` exists and `snapper -c home list`
+    returns only the synthetic current row (blank date) THEN
+    `recovery.home_snapshot_state == "empty"` (level normal); **positive
+    control:** a missing `date` column, or a non-blank unparseable date,
+    still yields `"unknown"`.
+28. Checks 0–23 still pass against schema 4.
+
+## v5 AS EXECUTED — 2026-09-24
+
+Implemented: `hwmon/nas_backup.py` (new); `daemon.py` gained
+`nas_backup_cache` (defaults to a real `NasBackupCache()`, matching every
+other injectable in this module — no test in the suite ever points it at
+the real host status file except via an explicit temp-dir `state_path`);
+`recovery.py` gained `STATE_EMPTY`/`_csv_all_dates_blank()`; `snapshot.py`
+`SCHEMA_VERSION` 3 → 4, `_REFERENCE_SNAPSHOT`/`_NULL_RECOVERY` updated.
+Widget: `Format.js` (`SCHEMA`, `nasBackup()`, `homeSnapshots()`'s `empty`
+branch), `Thresholds.js` (`recoveryLevel()`), `SystemPage.qml` (new row).
+
+Both suites green: 465 Python tests (up from 425) and 656 Node tests (up
+from 615, `plugin/js_tests.mjs`). Mutation proof, one per rule, each
+reverted after confirming red:
+
+- "`skipped` alone never sets `failed`"
+  (`test_skipped_alone_never_sets_failed` + 2 others) — reverted by making
+  `compute_nas_backup_state` also treat `skipped` as `failed`.
+- "`empty` is distinct from `unknown`"
+  (`test_config_exists_only_synthetic_current_row_is_empty_not_unknown` + 1
+  other) — reverted by deleting the `_csv_all_dates_blank()` branch in
+  `compute_recovery_state`.
+- "NAS backup stale/failed reaches the widget's warn level"
+  (`nas backup stale -> warn`, `nas backup failed -> warn`, `nas backup
+  failed reaches worstLevel`) — reverted by dropping the `nasState`
+  disjunct from `Thresholds.recoveryLevel()`.
+- The `renderAll()` sweep edit (`F.nasBackup(s)`) was `grep`-verified
+  present in `js_tests.mjs` before the suite was trusted (the specific
+  lesson from v4's deploy: an edit meant to add a formatter to this exact
+  sweep silently failed to apply once already).
+
+Not exercised live: no real status file exists yet (the writer job is a
+separate agent's scope, not yet built); `NasBackupCache`'s defaults were
+only run against a real, absent `~/.local/state/omarchy-recovery/
+nas-backup.json` on this machine, which correctly reads `not_configured`.
+No deploy in this delta (no `install.sh` run, no version bump, no
+`systemctl`) — left for review on branch `nas-backup`, uncommitted.

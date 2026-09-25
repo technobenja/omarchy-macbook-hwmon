@@ -38,7 +38,7 @@ class CliStalenessTests(unittest.TestCase):
         snapshot.write_atomic(self.state_dir / "latest.json", snap)
         code, out, err = self._run(["--json"])
         self.assertEqual(code, 0)
-        self.assertEqual(json.loads(out)["schema"], 3)
+        self.assertEqual(json.loads(out)["schema"], 4)
 
     def test_stale_snapshot_exits_nonzero_with_message(self) -> None:
         snap = dict(snapshot._REFERENCE_SNAPSHOT)

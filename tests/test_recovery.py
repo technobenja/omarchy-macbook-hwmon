@@ -97,6 +97,33 @@ class ComputeRecoveryStateTests(unittest.TestCase):
         result = recovery.compute_recovery_state(home_config_present=True, csv_text=csv_text, now=NOW)
         self.assertEqual(result["home_snapshot_state"], "fresh")
 
+    def test_config_exists_only_synthetic_current_row_is_empty_not_unknown(self) -> None:
+        # Measured live 2026-09-24: `snapper -c home list` with no snapshot
+        # taken yet shows only the synthetic "0"/current row, whose date is
+        # blank -- distinct from a real parse failure.
+        csv_text = "number,date\n0,\n"
+        result = recovery.compute_recovery_state(home_config_present=True, csv_text=csv_text, now=NOW)
+        self.assertEqual(result, {"home_snapshot_state": "empty", "home_snapshot_age_s": None})
+
+    def test_config_exists_zero_data_rows_is_empty(self) -> None:
+        csv_text = "number,date\n"
+        result = recovery.compute_recovery_state(home_config_present=True, csv_text=csv_text, now=NOW)
+        self.assertEqual(result["home_snapshot_state"], "empty")
+
+    def test_missing_date_column_stays_unknown_not_empty(self) -> None:
+        # Positive control for the empty/unknown boundary: a header with no
+        # `date` column at all is a real parse failure, not "no snapshots yet".
+        csv_text = "number,description\n1,hello\n"
+        result = recovery.compute_recovery_state(home_config_present=True, csv_text=csv_text, now=NOW)
+        self.assertEqual(result["home_snapshot_state"], "unknown")
+
+    def test_non_blank_garbage_date_stays_unknown_not_empty(self) -> None:
+        # Positive control: a data row with a non-blank but unparseable date
+        # is a real parse failure, not "no snapshots yet".
+        csv_text = "number,date\n1,not-a-date\n"
+        result = recovery.compute_recovery_state(home_config_present=True, csv_text=csv_text, now=NOW)
+        self.assertEqual(result["home_snapshot_state"], "unknown")
+
 
 class HomeConfigExistsTests(unittest.TestCase):
     def setUp(self) -> None:

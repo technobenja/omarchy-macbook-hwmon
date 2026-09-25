@@ -1,5 +1,5 @@
 {
-  "schema": 3,
+  "schema": 4,
   "ts": 1790179200.0,
   "battery": {
     "pct": 81,
@@ -129,6 +129,11 @@
       "state": "ok",
       "upower_pct": 47.3,
       "sysfs_pct": 49.0
+    },
+    "nas_backup": {
+      "state": "fresh",
+      "age_s": 7200.0,
+      "reason": ""
     }
   }
 }

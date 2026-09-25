@@ -4,7 +4,7 @@ import qs.Ui
 import "Format.js" as Format
 
 // Page 2 (A7): high-level view — load average, per-core usage + frequency,
-// RAM / swap, disk and network throughput, recovery checks (v4).
+// RAM / swap, disk and network throughput, recovery checks (v4, +NAS backup v5).
 Column {
   id: page
 
@@ -156,6 +156,11 @@ Column {
   StatRow {
     width: parent.width; label: "UPower vs battery"
     value: Format.upowerCheck(page.snapshot)
+    foreground: page.foreground; fontFamily: page.fontFamily
+  }
+  StatRow {
+    width: parent.width; label: "NAS backup"
+    value: Format.nasBackup(page.snapshot)
     foreground: page.foreground; fontFamily: page.fontFamily
   }
 }

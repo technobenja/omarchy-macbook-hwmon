@@ -1,5 +1,5 @@
 // Node tests for the pure JS half of techno.hwmon (Format.js, Thresholds.js)
-// against the schema-3 contract, tests/fixtures/latest.example.json.
+// against the schema-4 contract, tests/fixtures/latest.example.json.
 //
 //   node plugin/js_tests.mjs            # exit 0 = all pass
 //
@@ -56,7 +56,7 @@ function renderAll(s, tracker) {
   return [
     F.compactLabel(s, false), F.compactLabel(s, true), F.barLabel(st, s, false), F.stateJson(st, s),
     F.fanSpeed(s), F.fanControl(F.get(s, "fan.control")), JSON.stringify(F.guardBanner(s)),
-    F.blockerLines(s).join("|"), F.throttleRecent(s), F.homeSnapshots(s), F.upowerCheck(s), T.recoveryLevel(s),
+    F.blockerLines(s).join("|"), F.throttleRecent(s), F.homeSnapshots(s), F.upowerCheck(s), F.nasBackup(s), T.recoveryLevel(s),
     F.intText(F.get(s, "cpu.throttle.core_count")), F.intText(F.get(s, "cpu.throttle.package_count")),
     F.bool(F.get(s, "power_guard.sleep_blocked"), "yes", "no"),
     JSON.stringify(F.tempRows(F.get(s, "cpu.cores_c"))), JSON.stringify(F.tempRows(F.get(s, "temps"))),
@@ -85,12 +85,12 @@ const HOT = { "fan.max_rpm": 6199, "cpu.package_c": 84, "cpu.throttle.recent": f
 {
   const r = F.parse(FIXTURE_TEXT)
   eq("fixture parses as loaded", r.state, "loaded")
-  eq("fixture schema is 3", r.snapshot.schema, 3)
+  eq("fixture schema is 4", r.snapshot.schema, 4)
   const st = F.status(r.snapshot, r.state, (r.snapshot.ts + 0.4) * 1000, T.STALE_AFTER_S, r.error)
   eq("fixture is live", st.kind, "ok")
   eq("fixture label", F.barLabel(st, r.snapshot, false), "59° 1.3k")
 
-  for (const bad of [1, 2, 4, "3", null, undefined]) {
+  for (const bad of [1, 2, 3, "4", null, undefined]) {
     const o = fixture(); if (bad === undefined) delete o.schema; else o.schema = bad
     const p = F.parse(JSON.stringify(o))
     eq("schema " + String(bad) + " -> invalid", p.state, "invalid")
@@ -271,6 +271,35 @@ const HOT = { "fan.max_rpm": 6199, "cpu.package_c": 84, "cpu.throttle.recent": f
   eq("upower unknown text", F.upowerCheck(snap({ "recovery.upower.state": "unknown" })), "could not check")
   eq("recovery null -> dashes", F.homeSnapshots(snap({ "recovery": null })) + "|" + F.upowerCheck(snap({ "recovery": null })), "–|–")
   eq("recovery null -> normal", T.recoveryLevel(snap({ "recovery": null })), "normal")
+
+  // v5: home_snapshot_state "empty" -- set up, no snapshot taken yet.
+  eq("home empty -> normal", T.recoveryLevel(snap({ "recovery.home_snapshot_state": "empty", "recovery.home_snapshot_age_s": null })), "normal")
+  eq("home empty text", F.homeSnapshots(snap({ "recovery.home_snapshot_state": "empty", "recovery.home_snapshot_age_s": null })), "set up, none yet")
+}
+
+// ------------------------------------------------ v5 nas backup (R-N7/A-S5)
+{
+  eq("fixture nas backup -> normal", T.recoveryLevel(fixture()), "normal")
+  eq("fixture nas backup -> fresh text", F.nasBackup(fixture()), "2 h 0 min ago")
+
+  // positive controls: each nas_backup signal alone raises the bar to warn
+  eq("nas backup stale -> warn", T.recoveryLevel(snap({ "recovery.nas_backup.state": "stale", "recovery.nas_backup.age_s": 4 * 86400, "recovery.nas_backup.reason": null })), "warn")
+  eq("nas backup stale text", F.nasBackup(snap({ "recovery.nas_backup.state": "stale", "recovery.nas_backup.age_s": 4 * 86400, "recovery.nas_backup.reason": null })), "STALE · 4 d 0 h ago")
+  eq("nas backup failed -> warn", T.recoveryLevel(snap({ "recovery.nas_backup.state": "failed", "recovery.nas_backup.reason": "no-fresh-source" })), "warn")
+  eq("nas backup failed text with reason", F.nasBackup(snap({ "recovery.nas_backup.state": "failed", "recovery.nas_backup.reason": "no-fresh-source" })), "FAILED · no-fresh-source")
+  eq("nas backup failed text no reason", F.nasBackup(snap({ "recovery.nas_backup.state": "failed", "recovery.nas_backup.reason": null })), "FAILED")
+  eq("nas backup failed reaches worstLevel", T.worstLevel(snap({ "recovery.nas_backup.state": "failed" }), null) !== "normal", true)
+
+  // could-not-check / not-set-up are shown, never raised, never "fresh"
+  for (const st of ["unknown", "not_configured"]) eq("nas backup " + st + " -> normal", T.recoveryLevel(snap({ "recovery.nas_backup.state": st })), "normal")
+  eq("nas backup unknown text", F.nasBackup(snap({ "recovery.nas_backup.state": "unknown", "recovery.nas_backup.age_s": null })), "could not check")
+  eq("nas backup not_configured text", F.nasBackup(snap({ "recovery.nas_backup.state": "not_configured", "recovery.nas_backup.age_s": null })), "not set up")
+  eq("nas backup null -> dash", F.nasBackup(snap({ "recovery": null })), "–")
+  eq("nas backup null -> normal", T.recoveryLevel(snap({ "recovery": null })), "normal")
+
+  // skipped is a WRITER-side result never reaching this formatter as "failed"
+  // (compute_nas_backup_state's job); the widget only ever sees state/age_s/reason.
+  eq("nas backup fresh (post-skip, age still low) -> normal text", F.nasBackup(snap({ "recovery.nas_backup.state": "fresh", "recovery.nas_backup.age_s": 3600 })), "1 h 0 min ago")
 }
 
 console.log(`${passed} passed, ${failures.length} failed`)

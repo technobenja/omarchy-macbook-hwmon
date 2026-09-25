@@ -10,7 +10,7 @@
 
 var DASH = "–"                  // "–" : a null reading, in its slot
 var STALE_LABEL = "hwmon —"     // "hwmon —" : missing or stale snapshot (A9)
-var SCHEMA = 3                  // v4 (recovery key): any other schema is not live (A9)
+var SCHEMA = 4                  // v5 (recovery.nas_backup): any other schema is not live (A9)
 
 function get(obj, path) {
   var parts = String(path).split(".")
@@ -50,7 +50,7 @@ function compactLabel(snapshot, vertical) {
 // ---------------------------------------------------------------- staleness
 
 // loadState: "pending" (no read attempted yet), "missing" (file absent /
-// unreadable), "invalid" (read, but not a schema-3 snapshot), "loaded".
+// unreadable), "invalid" (read, but not a schema-4 snapshot), "loaded".
 // Returns { kind: "ok"|"missing"|"invalid"|"stale", age_s, headline, detail }.
 // age_s is null whenever there is no usable timestamp.
 function status(snapshot, loadState, nowMs, staleAfterS, loadError) {
@@ -289,13 +289,17 @@ function throttleRecent(snapshot) {
 }
 
 // ---------------------------------------------------------------- v4 recovery
-// recovery.home_snapshot_state: not_configured | unknown | fresh | stale.
+// recovery.home_snapshot_state: not_configured | unknown | empty | fresh | stale.
 // "unknown" means hwmon could not ask snapper; it is never shown as fresh.
+// "empty" means the config exists and snapper ran, but no snapshot has been
+// taken yet (v5: distinct from "unknown" -- a said-clean answer, not a
+// could-not-answer one).
 function homeSnapshots(snapshot) {
   var state = get(snapshot, "recovery.home_snapshot_state")
   var age = get(snapshot, "recovery.home_snapshot_age_s")
   if (state === "fresh" || state === "stale")
     return (state === "stale" ? "STALE · " : "") + ageText(age) + " ago"
+  if (state === "empty") return "set up, none yet"
   if (state === "not_configured") return "not set up"
   if (state === "unknown") return "could not check"
   return DASH
@@ -307,6 +311,25 @@ function upowerCheck(snapshot) {
   var pair = pct(get(snapshot, "recovery.upower.upower_pct"), 1) + " vs " + pct(get(snapshot, "recovery.upower.sysfs_pct"), 1)
   if (state === "ok") return "agrees · " + pair
   if (state === "divergent") return "DISAGREES · " + pair
+  if (state === "unknown") return "could not check"
+  return DASH
+}
+
+// ---------------------------------------------------------------- v5 nas backup
+
+// recovery.nas_backup: {state: not_configured | unknown | failed | fresh |
+// stale, age_s, reason}. R-N7/A-S5: hwmon reads only this small status
+// file the backup job writes -- never the repo, the mount or the network.
+// "skipped" alone (the backup job's own result) never reaches this
+// formatter as "failed" -- it only lets age_s grow toward "stale".
+function nasBackup(snapshot) {
+  var state = get(snapshot, "recovery.nas_backup.state")
+  var age = get(snapshot, "recovery.nas_backup.age_s")
+  var reason = get(snapshot, "recovery.nas_backup.reason")
+  if (state === "fresh" || state === "stale")
+    return (state === "stale" ? "STALE · " : "") + ageText(age) + " ago"
+  if (state === "failed") return "FAILED" + (reason ? " · " + text(reason) : "")
+  if (state === "not_configured") return "not set up"
   if (state === "unknown") return "could not check"
   return DASH
 }
