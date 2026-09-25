@@ -38,17 +38,17 @@ accent**, **critical = bar urgent**:
 |---|---|---|---|
 | Home snapshots | `59 min 35 s ago` | `fresh` (≤ 2 h) | normal |
 | | `STALE · 3 h 2 min ago` | `stale` | warn |
-| | `set up, none yet` | `empty` — snapper `home` config exists, no snapshot yet | normal |
+| | `configured, none yet` | `empty` — snapper `home` config exists, no snapshot yet | normal |
 | | `not set up` | `not_configured` — no `/etc/snapper/configs/home` | normal |
 | | `could not check` | `unknown` — snapper failed (e.g. "No permissions") | normal |
-| UPower vs battery | `agrees · 100.0 % vs 100.0 %` | `ok` | normal |
-| | `DISAGREES · 3.3 % vs 33.0 %` | `divergent` — > 5 points apart, or `EnergyFull/EnergyFullDesign` > 1.2 | warn |
+| UPower vs battery | `agrees · UPower 100.0 % / battery 100.0 %` | `ok` | normal |
+| | `DISAGREES · UPower 3.3 % / battery 33.0 %` | `divergent` — > 5 points apart, or `EnergyFull/EnergyFullDesign` > 1.2 | warn |
 | | `could not check` | `unknown` | normal |
 | NAS backup | `2 h 4 min ago` / `STALE · 4 d 1 h ago` | `fresh` (≤ 72 h) / `stale` | normal / warn |
 | | `FAILED · <reason>` | `failed` — last **non-skipped** attempt failed | warn |
-| | `not backed up yet` | `never` — file exists, no `ok` ever | warn |
+| | `configured, never completed` | `never` — file exists, no `ok` ever | warn |
 | | `not set up` | `not_configured` — no status file | normal |
-| | `could not check` | `unknown` — unreadable/invalid JSON | normal |
+| | `couldn't check (not a backup failure)` | `unknown` — unreadable/invalid JSON | normal |
 
 The NAS backup row reads only `~/.local/state/omarchy-recovery/nas-backup.json`
 and **requires omarchy-laptop-recovery's backup job** to write it; without

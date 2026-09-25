@@ -299,7 +299,7 @@ function homeSnapshots(snapshot) {
   var age = get(snapshot, "recovery.home_snapshot_age_s")
   if (state === "fresh" || state === "stale")
     return (state === "stale" ? "STALE · " : "") + ageText(age) + " ago"
-  if (state === "empty") return "set up, none yet"
+  if (state === "empty") return "configured, none yet"
   if (state === "not_configured") return "not set up"
   if (state === "unknown") return "could not check"
   return DASH
@@ -308,7 +308,7 @@ function homeSnapshots(snapshot) {
 // recovery.upower: {state: ok | divergent | unknown, upower_pct, sysfs_pct}.
 function upowerCheck(snapshot) {
   var state = get(snapshot, "recovery.upower.state")
-  var pair = pct(get(snapshot, "recovery.upower.upower_pct"), 1) + " vs " + pct(get(snapshot, "recovery.upower.sysfs_pct"), 1)
+  var pair = "UPower " + pct(get(snapshot, "recovery.upower.upower_pct"), 1) + " / battery " + pct(get(snapshot, "recovery.upower.sysfs_pct"), 1)
   if (state === "ok") return "agrees · " + pair
   if (state === "divergent") return "DISAGREES · " + pair
   if (state === "unknown") return "could not check"
@@ -334,8 +334,8 @@ function nasBackup(snapshot) {
   if (state === "fresh" || state === "stale")
     return (state === "stale" ? "STALE · " : "") + ageText(age) + " ago"
   if (state === "failed") return "FAILED" + (reason ? " · " + text(reason) : "")
-  if (state === "never") return "not backed up yet"
+  if (state === "never") return "configured, never completed"
   if (state === "not_configured") return "not set up"
-  if (state === "unknown") return "could not check"
+  if (state === "unknown") return "couldn't check (not a backup failure)"
   return DASH
 }

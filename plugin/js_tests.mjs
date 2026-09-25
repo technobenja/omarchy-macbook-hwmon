@@ -257,12 +257,12 @@ const HOT = { "fan.max_rpm": 6199, "cpu.package_c": 84, "cpu.throttle.recent": f
 {
   eq("fixture recovery -> normal", T.recoveryLevel(fixture()), "normal")
   eq("fixture home -> age", F.homeSnapshots(fixture()), "30 min 0 s ago")
-  eq("fixture upower -> agrees", F.upowerCheck(fixture()), "agrees · 47.3 % vs 49.0 %")
+  eq("fixture upower -> agrees", F.upowerCheck(fixture()), "agrees · UPower 47.3 % / battery 49.0 %")
   // positive controls: each signal alone raises the bar to warn
   eq("home stale -> warn", T.recoveryLevel(snap({ "recovery.home_snapshot_state": "stale", "recovery.home_snapshot_age_s": 9000 })), "warn")
   eq("home stale text", F.homeSnapshots(snap({ "recovery.home_snapshot_state": "stale", "recovery.home_snapshot_age_s": 9000 })), "STALE · 2 h 30 min ago")
   eq("upower divergent -> warn", T.recoveryLevel(snap({ "recovery.upower.state": "divergent", "recovery.upower.upower_pct": 3.27, "recovery.upower.sysfs_pct": 31.34 })), "warn")
-  eq("upower divergent text", F.upowerCheck(snap({ "recovery.upower.state": "divergent", "recovery.upower.upower_pct": 3.27, "recovery.upower.sysfs_pct": 31.34 })), "DISAGREES · 3.3 % vs 31.3 %")
+  eq("upower divergent text", F.upowerCheck(snap({ "recovery.upower.state": "divergent", "recovery.upower.upower_pct": 3.27, "recovery.upower.sysfs_pct": 31.34 })), "DISAGREES · UPower 3.3 % / battery 31.3 %")
   eq("divergent reaches worstLevel", T.worstLevel(snap({ "recovery.upower.state": "divergent" }), null) !== "normal", true)
   // three states: could-not-check and not-set-up are shown, never raised, never "fresh"
   for (const st of ["unknown", "not_configured"]) eq("home " + st + " -> normal", T.recoveryLevel(snap({ "recovery.home_snapshot_state": st })), "normal")
@@ -274,7 +274,7 @@ const HOT = { "fan.max_rpm": 6199, "cpu.package_c": 84, "cpu.throttle.recent": f
 
   // v5: home_snapshot_state "empty" -- set up, no snapshot taken yet.
   eq("home empty -> normal", T.recoveryLevel(snap({ "recovery.home_snapshot_state": "empty", "recovery.home_snapshot_age_s": null })), "normal")
-  eq("home empty text", F.homeSnapshots(snap({ "recovery.home_snapshot_state": "empty", "recovery.home_snapshot_age_s": null })), "set up, none yet")
+  eq("home empty text", F.homeSnapshots(snap({ "recovery.home_snapshot_state": "empty", "recovery.home_snapshot_age_s": null })), "configured, none yet")
 }
 
 // ------------------------------------------------ v5 nas backup (R-N7/A-S5)
@@ -292,7 +292,7 @@ const HOT = { "fan.max_rpm": 6199, "cpu.package_c": 84, "cpu.throttle.recent": f
 
   // could-not-check / not-set-up are shown, never raised, never "fresh"
   for (const st of ["unknown", "not_configured"]) eq("nas backup " + st + " -> normal", T.recoveryLevel(snap({ "recovery.nas_backup.state": st })), "normal")
-  eq("nas backup unknown text", F.nasBackup(snap({ "recovery.nas_backup.state": "unknown", "recovery.nas_backup.age_s": null })), "could not check")
+  eq("nas backup unknown text", F.nasBackup(snap({ "recovery.nas_backup.state": "unknown", "recovery.nas_backup.age_s": null })), "couldn't check (not a backup failure)")
   eq("nas backup not_configured text", F.nasBackup(snap({ "recovery.nas_backup.state": "not_configured", "recovery.nas_backup.age_s": null })), "not set up")
   eq("nas backup null -> dash", F.nasBackup(snap({ "recovery": null })), "–")
   eq("nas backup null -> normal", T.recoveryLevel(snap({ "recovery": null })), "normal")
@@ -305,7 +305,7 @@ const HOT = { "fan.max_rpm": 6199, "cpu.package_c": 84, "cpu.throttle.recent": f
   // it either (e.g. every run so far skipped on-battery) -- a real risk,
   // warned like stale/failed, but its own text: never "STALE · –".
   eq("nas backup never -> warn", T.recoveryLevel(snap({ "recovery.nas_backup.state": "never", "recovery.nas_backup.age_s": null, "recovery.nas_backup.reason": null })), "warn")
-  eq("nas backup never text", F.nasBackup(snap({ "recovery.nas_backup.state": "never", "recovery.nas_backup.age_s": null, "recovery.nas_backup.reason": null })), "not backed up yet")
+  eq("nas backup never text", F.nasBackup(snap({ "recovery.nas_backup.state": "never", "recovery.nas_backup.age_s": null, "recovery.nas_backup.reason": null })), "configured, never completed")
   check("nas backup never text is not a bare stale dash", F.nasBackup(snap({ "recovery.nas_backup.state": "never" })).indexOf("STALE") === -1)
   eq("nas backup never reaches worstLevel", T.worstLevel(snap({ "recovery.nas_backup.state": "never" }), null) !== "normal", true)
 }
