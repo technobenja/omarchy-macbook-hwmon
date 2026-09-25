@@ -90,10 +90,12 @@ class ComputeNasBackupStateTests(unittest.TestCase):
         result = nas_backup.compute_nas_backup_state(file_present=True, raw_json=json.dumps(record), now=NOW)
         self.assertEqual(result["state"], "fresh")
 
-    def test_skipped_with_no_ok_ever_is_stale_not_fresh(self) -> None:
+    def test_skipped_with_no_ok_ever_is_never_not_fresh(self) -> None:
+        # No ok ever, and no failed attempt behind it either (v1-style file,
+        # no last_attempt_* fields at all) -> "never", not "stale"/"failed".
         record = {"result": "skipped", "reason": "nas-unreachable", "ts": NOW}
         result = nas_backup.compute_nas_backup_state(file_present=True, raw_json=json.dumps(record), now=NOW)
-        self.assertEqual(result["state"], "stale")
+        self.assertEqual(result["state"], "never")
         self.assertIsNone(result["age_s"])
 
     def test_failed_result_is_failed_with_reason(self) -> None:
@@ -120,15 +122,15 @@ class ComputeNasBackupStateTests(unittest.TestCase):
         record = {"result": "ok", "ts": "not-a-number", "last_ok_ts": "also-not-a-number"}
         result = nas_backup.compute_nas_backup_state(file_present=True, raw_json=json.dumps(record), now=NOW)
         # No usable timestamp at all on an "ok" row -- treated the same as
-        # "no ok ever": stale, not a guessed fresh.
-        self.assertEqual(result["state"], "stale")
+        # "no ok ever": never, not a guessed fresh.
+        self.assertEqual(result["state"], "never")
         self.assertIsNone(result["age_s"])
 
     def test_bool_is_not_mistaken_for_a_timestamp(self) -> None:
         # bool is an int subclass in Python -- must not be accepted as a ts.
         record = {"result": "ok", "ts": True, "last_ok_ts": True}
         result = nas_backup.compute_nas_backup_state(file_present=True, raw_json=json.dumps(record), now=NOW)
-        self.assertEqual(result["state"], "stale")
+        self.assertEqual(result["state"], "never")
         self.assertIsNone(result["age_s"])
 
     def test_extra_contract_fields_are_ignored(self) -> None:
@@ -149,6 +151,97 @@ class ComputeNasBackupStateTests(unittest.TestCase):
         }
         result = nas_backup.compute_nas_backup_state(file_present=True, raw_json=json.dumps(record), now=NOW)
         self.assertEqual(result["state"], "fresh")
+
+
+class LastAttemptFieldsTests(unittest.TestCase):
+    """v2 contract: last_attempt_ts/last_attempt_result/last_attempt_reason
+    describe the most recent NON-skipped attempt, carried forward across
+    `skipped` rows -- fixes the measured bug where `ok -> failed ->
+    skipped(on-battery)` read as `fresh` (the current row was `skipped`,
+    and `skipped` alone never used to set `failed`)."""
+
+    def test_failed_attempt_survives_a_later_skip(self) -> None:
+        # The exact measured regression: ok, then failed, then skipped
+        # on-battery -- the CURRENT row is "skipped", but the last NON-skipped
+        # attempt failed, and that must still surface as "failed".
+        record = {
+            "result": "skipped",
+            "reason": "on-battery",
+            "ts": NOW,
+            "last_ok_ts": NOW - 2 * 3600,
+            "last_attempt_ts": NOW - 3600,
+            "last_attempt_result": "failed",
+            "last_attempt_reason": "nas-unreachable",
+        }
+        result = nas_backup.compute_nas_backup_state(file_present=True, raw_json=json.dumps(record), now=NOW)
+        self.assertEqual(result["state"], "failed")
+        self.assertEqual(result["reason"], "nas-unreachable")
+        # age_s still comes from the last known-good backup, not the failure.
+        self.assertAlmostEqual(result["age_s"], 2 * 3600.0, delta=1.0)
+
+    def test_last_attempt_ok_does_not_mask_current_skip_aging(self) -> None:
+        # last_attempt_result "ok" (the last real attempt succeeded) must
+        # not itself force "failed" -- normal aging from last_ok_ts applies.
+        record = {
+            "result": "skipped", "reason": "on-battery", "ts": NOW,
+            "last_ok_ts": NOW - 3600, "last_attempt_ts": NOW - 3600, "last_attempt_result": "ok",
+        }
+        result = nas_backup.compute_nas_backup_state(file_present=True, raw_json=json.dumps(record), now=NOW)
+        self.assertEqual(result["state"], "fresh")
+
+    def test_last_attempt_null_with_no_ok_ever_is_never(self) -> None:
+        # Every run so far has been skipped (e.g. always on battery) -- no
+        # non-skipped attempt has ever happened, and no ok ever either.
+        record = {
+            "result": "skipped", "reason": "on-battery", "ts": NOW,
+            "last_attempt_ts": None, "last_attempt_result": None, "last_attempt_reason": None,
+        }
+        result = nas_backup.compute_nas_backup_state(file_present=True, raw_json=json.dumps(record), now=NOW)
+        self.assertEqual(result["state"], "never")
+
+    def test_first_ever_attempt_fails_with_no_ok_ever_is_failed_not_never(self) -> None:
+        # Failed takes priority over "never" -- there IS a concrete failure
+        # to report, even though nothing has ever succeeded.
+        record = {
+            "result": "failed", "reason": "no-password", "ts": NOW,
+            "last_attempt_ts": NOW, "last_attempt_result": "failed", "last_attempt_reason": "no-password",
+        }
+        result = nas_backup.compute_nas_backup_state(file_present=True, raw_json=json.dumps(record), now=NOW)
+        self.assertEqual(result["state"], "failed")
+        self.assertIsNone(result["age_s"])
+        self.assertEqual(result["reason"], "no-password")
+
+    def test_legacy_file_without_last_attempt_fields_falls_back_to_result(self) -> None:
+        # No last_attempt_* keys at all (v1 job file) -- the CURRENT row's
+        # own result/reason decide failed, exactly as before this fix.
+        record = {"result": "failed", "reason": "no-fresh-source", "ts": NOW, "last_ok_ts": NOW - 3600}
+        result = nas_backup.compute_nas_backup_state(file_present=True, raw_json=json.dumps(record), now=NOW)
+        self.assertEqual(result["state"], "failed")
+        self.assertEqual(result["reason"], "no-fresh-source")
+
+    def test_legacy_file_skipped_never_reads_failed_from_a_past_failure(self) -> None:
+        # v1 behaviour, unchanged by this fix: without last_attempt_* keys,
+        # a "skipped" row cannot see a failure several rows back at all.
+        record = {"result": "skipped", "reason": "on-battery", "ts": NOW, "last_ok_ts": NOW - 3600}
+        result = nas_backup.compute_nas_backup_state(file_present=True, raw_json=json.dumps(record), now=NOW)
+        self.assertEqual(result["state"], "fresh")
+
+    def test_bogus_last_attempt_result_value_is_ignored_not_fatal(self) -> None:
+        record = {
+            "result": "skipped", "ts": NOW, "last_ok_ts": NOW - 3600,
+            "last_attempt_result": "sideways",
+        }
+        result = nas_backup.compute_nas_backup_state(file_present=True, raw_json=json.dumps(record), now=NOW)
+        self.assertEqual(result["state"], "fresh")
+
+    def test_non_string_last_attempt_reason_is_dropped_not_fatal(self) -> None:
+        record = {
+            "result": "skipped", "ts": NOW,
+            "last_attempt_result": "failed", "last_attempt_reason": 42,
+        }
+        result = nas_backup.compute_nas_backup_state(file_present=True, raw_json=json.dumps(record), now=NOW)
+        self.assertEqual(result["state"], "failed")
+        self.assertIsNone(result["reason"])
 
 
 class ReadStatusFileTests(unittest.TestCase):

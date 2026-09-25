@@ -134,13 +134,13 @@ function saturationLevel(tracker, snapshot) {
 
 // warn when local history has stopped (R-L4.1), UPower's battery reading
 // disagrees with the kernel's (spec §11 R3), or the NAS backup has gone
-// stale/failed (v5, R-N7/A-S5). "unknown" / "not_configured" / "empty" stay
-// normal: they are shown in the popup, not raised in the bar.
+// stale/failed/never-backed-up (v5, R-N7/A-S5). "unknown" / "not_configured"
+// / "empty" stay normal: they are shown in the popup, not raised in the bar.
 function recoveryLevel(snapshot) {
   var nasState = read(snapshot, ["recovery", "nas_backup", "state"])
   return read(snapshot, ["recovery", "home_snapshot_state"]) === "stale"
       || read(snapshot, ["recovery", "upower", "state"]) === "divergent"
-      || nasState === "stale" || nasState === "failed" ? "warn" : "normal"
+      || nasState === "stale" || nasState === "failed" || nasState === "never" ? "warn" : "normal"
 }
 
 // ---------------------------------------------------------------- worst

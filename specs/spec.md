@@ -1031,3 +1031,96 @@ only run against a real, absent `~/.local/state/omarchy-recovery/
 nas-backup.json` on this machine, which correctly reads `not_configured`.
 No deploy in this delta (no `install.sh` run, no version bump, no
 `systemctl`) — left for review on branch `nas-backup`, uncommitted.
+
+## v5 amendment — 2026-09-24 (contract v2: `last_attempt_*`, a `never` state)
+
+**Committed as `fddcd3e`; this amendment continues on top, uncommitted**
+(per the Authority Map: correct by appending a dated note, never by editing
+the shipped version away). Reason, measured by the main session against
+the job's real files: the sequence `ok → failed → skipped(on-battery)`
+read as `"fresh"` under the A24 contract above — `compute_nas_backup_state`
+only ever looked at the CURRENT row's `result`, which was `skipped`, and
+`skipped` alone correctly never set `failed`, but nothing else was carrying
+the failure forward either, so it silently vanished within one hourly
+tick.
+
+**A26 — contract v2 fields.** The backup job now also writes
+`last_attempt_ts`, `last_attempt_result` (`ok`\|`failed`\|`null`), and
+`last_attempt_reason`, describing the most recent NON-skipped attempt,
+carried forward across `skipped` rows exactly like `last_ok_ts` already
+is. `failed` is now driven by `last_attempt_result == "failed"` when the
+key is present; `age_s` is unchanged (still always from `last_ok_ts`, or
+an `ok` row's own `ts` as fallback). **Backward compatible by key
+presence, not value:** when `last_attempt_result` is absent from the JSON
+entirely (an older job file), classification falls back to the CURRENT
+row's own `result`/`reason` — the exact A24 behaviour, unchanged for that
+file shape.
+
+**A27 — a `never` state.** A file can exist with no `ok` ever recorded
+AND no failed attempt behind it either (e.g. every run so far has been
+skipped on battery, from day one). The old code reported this as `stale`
+with `age_s: null`, which the widget rendered as `"STALE · – ago"` — a
+bare dash reading as a data problem, not as the real risk it is. Now a
+distinct state, `"never"`, shown as `"not backed up yet"` and warned in
+the bar exactly like `stale`/`failed`. **Priority: `failed` beats
+`never`** — a first-ever attempt that fails (no `ok` ever, but there IS a
+concrete failure to report) reads as `failed`, not `never`; `never` is
+reserved for "nothing has happened yet that's worth naming."
+
+## MODIFIED (amendment)
+
+- `hwmon/nas_backup.py`: `compute_nas_backup_state()` reworked per A26/A27
+  (new `STATE_NEVER`, new `_as_timestamp()`/`_as_optional_str()` helpers,
+  presence-gated `last_attempt_result` branch). Docstring rewritten for six
+  states (was four).
+- `Format.js` `nasBackup()`: new `"never"` branch → `"not backed up yet"`;
+  comment updated to explain why `failed` now reflects the last
+  NON-skipped attempt, not the current row.
+- `Thresholds.js` `recoveryLevel()`: also warns on `nas_backup.state ==
+  "never"`.
+- No snapshot shape change — `{state, age_s, reason}`'s field TYPES are
+  unchanged (`state` is still a string; `validate_shape` checks type, not
+  enum), so schema stays 4. Added a documentation-pinning shape test,
+  `test_recovery_nas_backup_state_never_is_valid_shape`.
+
+## Acceptance (v5 amendment)
+
+29. WHEN a status file reads `ok → failed → skipped(on-battery)` (the
+    measured regression) THEN `recovery.nas_backup.state == "failed"` with
+    the failed run's `reason`, and `age_s` still comes from `last_ok_ts`
+    (the last known-good backup), not from the failure; **positive
+    control:** `last_attempt_result == "ok"` on the same shape does NOT
+    force `failed` — normal `fresh`/`stale` aging applies.
+30. WHEN a status file has no `last_attempt_result` key at all (a v1 job
+    file) THEN classification falls back to the current row's own
+    `result`/`reason`, unchanged from A24; **positive control:** a
+    `skipped` row in this shape cannot see a failure several rows back —
+    documents the boundary of the fallback, not a bug in it.
+31. WHEN no `ok` has ever been recorded and the most recent non-skipped
+    attempt (if any) did not fail THEN `state == "never"`, shown as "not
+    backed up yet" and warned; **positive control:** a first-ever attempt
+    that DID fail, with no ok ever either, yields `"failed"`, not
+    `"never"` — failed takes priority.
+32. Checks 0–28 still pass with the reworked classification.
+
+## v5 amendment AS EXECUTED — 2026-09-24
+
+Implemented as described above. Both suites green: **473 Python tests**
+(up from 465; +8 in `LastAttemptFieldsTests` plus 3 existing "no ok ever"
+tests renamed/retargeted from `stale` to `never`) and **660 Node tests**
+(up from 656). Mutation proof, one per new rule, each reverted after
+confirming red:
+
+- "`failed` reflects the last NON-skipped attempt, not the current row" —
+  reverted the presence-gated `last_attempt_result` branch back to
+  `result == RESULT_FAILED` unconditionally; `test_failed_attempt_survives
+  _a_later_skip` and `test_non_string_last_attempt_reason_is_dropped_not_
+  fatal` went red.
+- "`never` is warned like `stale`/`failed`" — dropped the `nasState ===
+  "never"` disjunct from `Thresholds.recoveryLevel()`; `nas backup never
+  -> warn` and `nas backup never reaches worstLevel` went red.
+
+Not exercised live: same caveats as the base v5 delta above — no real
+status file exists yet on this machine, and the job agent's promised
+`samples-v2/` fixtures had not appeared in the scratch directory by the
+time this amendment was finished (checked; none to run).

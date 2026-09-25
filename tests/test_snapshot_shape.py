@@ -227,6 +227,15 @@ class ShapeValidationTests(unittest.TestCase):
         errors = snapshot.validate_shape(broken, self.fixture)
         self.assertTrue(any("recovery.nas_backup.state" in e for e in errors))
 
+    def test_recovery_nas_backup_state_never_is_valid_shape(self) -> None:
+        # v2 contract fix: "never" (no ok ever, no failed attempt behind it
+        # either) is a value the state string may hold; validate_shape only
+        # checks type, not the enum, but this documents/pins the addition.
+        broken = copy.deepcopy(self.fixture)
+        broken["recovery"]["nas_backup"] = {"state": "never", "age_s": None, "reason": None}
+        errors = snapshot.validate_shape(broken, self.fixture)
+        self.assertEqual(errors, [])
+
 
 class DynamicLabelMapStructuralCheckTests(unittest.TestCase):
     """Corrected 2026-09-23 (spec A3 dated note): `temps` and `cpu.cores_c`

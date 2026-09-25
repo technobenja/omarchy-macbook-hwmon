@@ -9,13 +9,29 @@ omarchy-recovery/nas-backup.json`, falling back to
 `~/.local/state/omarchy-recovery/nas-backup.json` when `XDG_STATE_HOME` is
 unset (XDG default). Contract (as handed to this module):
 `{ts, iso, result: ok|skipped|failed, reason, snapshot_id, bytes_added,
-files_new, files_changed, source_snapper, duration_s, last_ok_ts}` -- this
-module reads only `result`, `reason`, `ts` and `last_ok_ts`; the rest is the
+files_new, files_changed, source_snapper, duration_s, last_ok_ts,
+last_attempt_ts, last_attempt_result: ok|failed|null, last_attempt_reason}`
+-- this module reads only `result`, `reason`, `ts`, `last_ok_ts` and the
+three `last_attempt_*` fields (v2 of the contract); the rest is the
 writer's own bookkeeping and is not hwmon's concern.
 
-Four states, matching `feedback_absent_is_not_zero` (said-clean /
-could-not-answer / never-asked) plus a `failed` state driven by the writer's
-own report:
+`last_attempt_ts`/`last_attempt_result`/`last_attempt_reason` are carried
+forward across rows exactly like `last_ok_ts`: they describe the most
+recent NON-skipped attempt (an `ok` or a `failed` run), so a `failed` run
+that is then followed by one or more `skipped` runs (e.g. the laptop went
+back onto battery) does not lose the failure the way reading only the
+CURRENT row's `result` would -- measured live: `ok -> failed -> skipped
+(on-battery)` read as `fresh` under the v1 contract (this module only
+looked at the current row, which was `skipped`, and `skipped` never sets
+`failed`), silently losing an hour-old failure on the next hourly tick.
+These three fields are optional for backward compatibility with an older
+job file that predates them: when `last_attempt_result` is absent from the
+JSON entirely, this module falls back to the CURRENT row's own
+`result`/`reason`, exactly as the v1 contract behaved.
+
+Six states, matching `feedback_absent_is_not_zero` (said-clean /
+could-not-answer / never-asked) plus a `failed` state driven by the
+writer's own report:
 
 - `not_configured` -- the status file does not exist yet (the backup job has
   never run, or hasn't been built at all). Checked by the file's existence,
@@ -24,20 +40,23 @@ own report:
 - `unknown` -- the file exists but is unreadable, is not valid JSON, is not
   a JSON object, or its `result` field is missing/not one of
   `ok`/`skipped`/`failed` -- could not answer, never shown as fresh.
-- `failed` -- the file's own last-recorded `result` is `failed`; `reason` is
-  carried through for display. **`skipped` alone never produces this
-  state** -- a skipped run (the laptop was simply away) only lets `age_s`
-  keep growing toward `stale`, per the task requirement.
-- a real reading: `fresh` (`age_s <= STALE_AFTER_S`) or `stale` (older, OR
-  there has never been a recorded `ok` while the file exists at all --
-  "no ok ever" must not be reported as fresh by omission).
+- `failed` -- the most recent NON-skipped attempt's result is `failed`
+  (`last_attempt_result` when present, else the current row's own
+  `result`); its reason is carried through for display. **`skipped` alone
+  never produces this state** -- a skipped run (the laptop was simply
+  away) with no failed attempt behind it only lets `age_s` keep growing
+  toward `stale`/`never`.
+- `never` -- the file exists, the most recent non-skipped attempt (if any)
+  did NOT fail, and there has never been a recorded `ok` at all (e.g. every
+  run so far has been skipped on battery) -- a real risk, shown as "not
+  backed up yet", distinct from `stale`'s "there WAS a backup, it's just
+  old" (`stale` with no age would otherwise render as a bare dash).
+- a real reading: `fresh` (`age_s <= STALE_AFTER_S`) or `stale` (older).
 
-`age_s` is computed from `last_ok_ts` when present; when `result == "ok"`
-and the writer hasn't (yet) filled in `last_ok_ts` on its own success row,
-this run's own `ts` stands in for it (an `ok` result **is** a last-ok
-event). A `skipped`/`failed` row's `last_ok_ts` is expected to keep
-carrying forward the previous success's timestamp so the age keeps growing
-correctly across intervening non-ok runs.
+`age_s` is always computed from `last_ok_ts` (or, when the current row's
+own `result == "ok"` and it hasn't yet echoed `last_ok_ts` onto itself,
+that row's own `ts` -- an `ok` result **is** a last-ok event), independent
+of the failed/never classification above.
 
 Queried at a low rate (>= 60 s, task requirement) and cached between ticks,
 exactly like `recovery.RecoveryCache` -- this module reads one small local
@@ -56,6 +75,7 @@ from typing import Callable
 STATE_NOT_CONFIGURED = "not_configured"
 STATE_UNKNOWN = "unknown"
 STATE_FAILED = "failed"
+STATE_NEVER = "never"
 STATE_FRESH = "fresh"
 STATE_STALE = "stale"
 
@@ -93,6 +113,18 @@ def read_status_file(path: Path) -> str | None:
 # --- pure classification -----------------------------------------------------
 
 
+def _as_timestamp(value: object) -> float | None:
+    """A JSON number, excluding `bool` (an `int` subclass in Python) --
+    never a crash on a malformed field."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value
+
+
+def _as_optional_str(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
 def compute_nas_backup_state(
     *,
     file_present: bool,
@@ -101,7 +133,7 @@ def compute_nas_backup_state(
     stale_after_s: float = STALE_AFTER_S,
 ) -> dict:
     """`{state, age_s, reason}` -- pure, no I/O. See the module docstring
-    for the four states."""
+    for the six states."""
     if not file_present:
         return dict(_NULL_RESULT)
     if raw_json is None:
@@ -117,12 +149,8 @@ def compute_nas_backup_state(
     if result not in _VALID_RESULTS:
         return {"state": STATE_UNKNOWN, "age_s": None, "reason": None}
 
-    last_ok_ts = data.get("last_ok_ts")
-    if not isinstance(last_ok_ts, (int, float)) or isinstance(last_ok_ts, bool):
-        last_ok_ts = None
-    ts = data.get("ts")
-    if not isinstance(ts, (int, float)) or isinstance(ts, bool):
-        ts = None
+    last_ok_ts = _as_timestamp(data.get("last_ok_ts"))
+    ts = _as_timestamp(data.get("ts"))
 
     effective_last_ok = last_ok_ts
     if effective_last_ok is None and result == RESULT_OK:
@@ -130,17 +158,32 @@ def compute_nas_backup_state(
         # echoed it back into last_ok_ts on this same row.
         effective_last_ok = ts
 
-    reason = data.get("reason")
-    reason = reason if isinstance(reason, str) else None
+    # v2 contract: last_attempt_* describes the most recent NON-skipped
+    # attempt, carried forward across `skipped` rows exactly like
+    # last_ok_ts. Presence of the KEY (not its value) is what selects v2
+    # behaviour, so an older job file that predates these fields entirely
+    # falls back to the current row's own result/reason unchanged.
+    if "last_attempt_result" in data:
+        last_attempt_result = data.get("last_attempt_result")
+        if last_attempt_result not in (RESULT_OK, RESULT_FAILED, None):
+            last_attempt_result = None  # a bogus value is "no attempt known", never fatal
+        is_failed = last_attempt_result == RESULT_FAILED
+        failure_reason = _as_optional_str(data.get("last_attempt_reason"))
+    else:
+        is_failed = result == RESULT_FAILED
+        failure_reason = _as_optional_str(data.get("reason"))
 
-    if result == RESULT_FAILED:
+    if is_failed:
         age_s = None if effective_last_ok is None else round(max(0.0, now - effective_last_ok), 1)
-        return {"state": STATE_FAILED, "age_s": age_s, "reason": reason}
+        return {"state": STATE_FAILED, "age_s": age_s, "reason": failure_reason}
 
     if effective_last_ok is None:
-        # "skipped" (or a malformed "ok") with no last-ok timestamp at all --
-        # "no ok ever while the file exists" is stale, never a guessed fresh.
-        return {"state": STATE_STALE, "age_s": None, "reason": None}
+        # No ok ever, and the most recent non-skipped attempt (if any)
+        # didn't fail either -- e.g. every run so far has been skipped
+        # on-battery. A real risk, but not the same claim as "stale" (there
+        # WAS a backup once); "stale" with no age would otherwise render
+        # as a bare dash instead of naming what's actually going on.
+        return {"state": STATE_NEVER, "age_s": None, "reason": None}
 
     age_s = max(0.0, now - effective_last_ok)
     state = STATE_STALE if age_s > stale_after_s else STATE_FRESH

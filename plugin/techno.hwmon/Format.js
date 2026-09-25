@@ -317,11 +317,16 @@ function upowerCheck(snapshot) {
 
 // ---------------------------------------------------------------- v5 nas backup
 
-// recovery.nas_backup: {state: not_configured | unknown | failed | fresh |
-// stale, age_s, reason}. R-N7/A-S5: hwmon reads only this small status
-// file the backup job writes -- never the repo, the mount or the network.
-// "skipped" alone (the backup job's own result) never reaches this
-// formatter as "failed" -- it only lets age_s grow toward "stale".
+// recovery.nas_backup: {state: not_configured | unknown | failed | never |
+// fresh | stale, age_s, reason}. R-N7/A-S5: hwmon reads only this small
+// status file the backup job writes -- never the repo, the mount or the
+// network. "skipped" alone (the backup job's own result) never reaches
+// this formatter as "failed" -- "failed" reflects the most recent
+// NON-skipped attempt (v2 contract), carried forward across skips, so a
+// failure doesn't vanish on the next skipped tick. "never" (a real risk:
+// no ok has EVER been recorded) is shown as its own text, never as
+// "STALE · –" -- a bare dash there would read as a data problem, not a
+// backup problem.
 function nasBackup(snapshot) {
   var state = get(snapshot, "recovery.nas_backup.state")
   var age = get(snapshot, "recovery.nas_backup.age_s")
@@ -329,6 +334,7 @@ function nasBackup(snapshot) {
   if (state === "fresh" || state === "stale")
     return (state === "stale" ? "STALE · " : "") + ageText(age) + " ago"
   if (state === "failed") return "FAILED" + (reason ? " · " + text(reason) : "")
+  if (state === "never") return "not backed up yet"
   if (state === "not_configured") return "not set up"
   if (state === "unknown") return "could not check"
   return DASH

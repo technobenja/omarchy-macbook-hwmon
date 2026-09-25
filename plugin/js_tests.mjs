@@ -300,6 +300,14 @@ const HOT = { "fan.max_rpm": 6199, "cpu.package_c": 84, "cpu.throttle.recent": f
   // skipped is a WRITER-side result never reaching this formatter as "failed"
   // (compute_nas_backup_state's job); the widget only ever sees state/age_s/reason.
   eq("nas backup fresh (post-skip, age still low) -> normal text", F.nasBackup(snap({ "recovery.nas_backup.state": "fresh", "recovery.nas_backup.age_s": 3600 })), "1 h 0 min ago")
+
+  // "never" (v2 contract): no ok EVER recorded, and no failed attempt behind
+  // it either (e.g. every run so far skipped on-battery) -- a real risk,
+  // warned like stale/failed, but its own text: never "STALE · –".
+  eq("nas backup never -> warn", T.recoveryLevel(snap({ "recovery.nas_backup.state": "never", "recovery.nas_backup.age_s": null, "recovery.nas_backup.reason": null })), "warn")
+  eq("nas backup never text", F.nasBackup(snap({ "recovery.nas_backup.state": "never", "recovery.nas_backup.age_s": null, "recovery.nas_backup.reason": null })), "not backed up yet")
+  check("nas backup never text is not a bare stale dash", F.nasBackup(snap({ "recovery.nas_backup.state": "never" })).indexOf("STALE") === -1)
+  eq("nas backup never reaches worstLevel", T.worstLevel(snap({ "recovery.nas_backup.state": "never" }), null) !== "normal", true)
 }
 
 console.log(`${passed} passed, ${failures.length} failed`)
