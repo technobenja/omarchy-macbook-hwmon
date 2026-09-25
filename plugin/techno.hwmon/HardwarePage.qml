@@ -138,6 +138,13 @@ Column {
     foreground: page.foreground; fontFamily: page.fontFamily
   }
   StatRow { width: parent.width; label: "Design capacity"; value: Format.ah(Format.get(page.snapshot, "battery.charge_design_ah")); foreground: page.foreground; fontFamily: page.fontFamily }
+  // v7: UPower's reading vs the kernel's, beside the battery it is about.
+  // Full width: "agrees · UPower 100.0 % / battery 100.0 %" needs the room.
+  StatRow {
+    width: parent.width; label: "UPower check"
+    value: Format.upowerCheck(page.snapshot)
+    foreground: page.foreground; fontFamily: page.fontFamily
+  }
 
   PanelSeparator { foreground: page.foreground }
 

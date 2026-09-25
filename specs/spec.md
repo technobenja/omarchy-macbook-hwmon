@@ -1202,3 +1202,19 @@ identical versions. Out of hwmon's repo (not this release): `hwmon-update.md` §
 still says "load line must be present" (contradicts the fresh-shell fact); fix it
 in `claude-agents`. LATER (UX): per-row colour for RECOVERY values; a backstop
 status row; friendlier text for the job's reason codes.
+
+---
+
+# v7 — release 1.3.1: layout (2026-09-25) · delta
+
+**Owner, reviewing the live 1.3.0 popup:** *"home snapshots and NAS Backup should be together. it's strange to have the power in between them. separate section would be better."* Choice made: the UPower check moves to the Hardware page's BATTERY section (the owner picked this over a separate POWER section on the System page).
+
+## MODIFIED
+- **System page:** section `RECOVERY` → **`BACKUPS`**: Home snapshots, then NAS backup. (Previously: RECOVERY with Home snapshots, UPower check, NAS backup.)
+- **Hardware page, BATTERY:** new full-width row **UPower check** after "Design capacity", with the same `Format.upowerCheck` text as before. (Previously on the System page.)
+- The bar's warn rule is unchanged (`recoveryLevel` still covers all three).
+
+## Acceptance (live, pre-committed)
+- A1 IPC fresh; A4 new shell PID + IPC answer + 0 warnings; A6 installed == repo; post-copy gate `staged=ok`.
+- A3 (look-at-it): System page shows BACKUPS with exactly Home snapshots then NAS backup, and no UPower row; Hardware page BATTERY shows "UPower check" with its value NOT elided.
+- A7 scrub clean. Both suites green. No collector change → no A5 re-measure (Python identical to 1.3.0, proven by A6).

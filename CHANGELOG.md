@@ -4,6 +4,13 @@ Semver. The version lives in three places that must agree:
 `hwmon/__init__.py` (`__version__`), `plugin/techno.hwmon/manifest.json`
 (`version`), and this file.
 
+## 1.3.1 — 2026-09-25
+
+Layout only (owner feedback on 1.3.0): the System page's RECOVERY section
+becomes **BACKUPS** with Home snapshots then NAS backup together, and the
+**UPower check** moves to the Hardware page's BATTERY section (full width),
+beside the battery it compares. No schema, logic or text change.
+
 ## 1.3.0 — 2026-09-25
 
 NAS-backup freshness and clearer recovery wording (spec v5, v5 amendment, v6).

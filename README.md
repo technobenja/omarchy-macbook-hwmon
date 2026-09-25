@@ -8,12 +8,12 @@ It was built for a machine that has just had a new iFixit battery and fan
 fitted: it keeps the low-level health numbers (fan, SMC temperatures, battery
 power and wear) one glance away, and keeps a history.
 
-> **Status (2026-09-25): v1.3.0 installed and running on omarchy.** Adds a
-> **NAS backup** row (freshness of the companion backup job's status file:
-> fresh / stale / failed / never / not set up), a "configured, none yet" state
-> for home snapshots, clearer RECOVERY wording, and an operator
-> [`RUNBOOK.md`](RUNBOOK.md). Snapshot schema 4. 474 Python + 660 widget tests;
-> verified live — see the spec's *v6 AS EXECUTED* note and [`CHANGELOG.md`](CHANGELOG.md).
+> **Status (2026-09-25): v1.3.1 installed and running on omarchy.** The
+> System page groups **BACKUPS** (home snapshots, NAS backup); the **UPower
+> check** moved into the Hardware page's battery section. v1.3.0 added the NAS
+> backup row (schema 4) and an operator [`RUNBOOK.md`](RUNBOOK.md). 474 Python +
+> 660 widget tests; verified live — see the spec's *v7 AS EXECUTED* note and
+> [`CHANGELOG.md`](CHANGELOG.md).
 
 ## What it shows
 
@@ -29,8 +29,9 @@ to `hwmon —` instead of showing an old number as current.
   label. Sensors the SMC reports as absent (`-127 °C` and similar) are counted,
   not hidden.
 - **System** — load, per-core usage and frequency, RAM/swap, SSD read/write,
-  network throughput, and **RECOVERY**: home snapshots, UPower check, NAS
-  backup (see [`RUNBOOK.md`](RUNBOOK.md) for every state).
+  network throughput, and **BACKUPS**: home snapshots and NAS backup (see
+  [`RUNBOOK.md`](RUNBOOK.md) for every state). The battery section on the
+  Hardware page carries the **UPower check**.
 
 ## How it works
 

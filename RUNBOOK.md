@@ -22,16 +22,18 @@ accent**, **critical = bar urgent**:
 
 | level | rule |
 |---|---|
-| warn | CPU package ≥ 80 °C · battery temp ≥ 45 °C · `cpu.throttle.recent` · cooling saturated (fan ≥ 95 % of max **and** package ≥ 80 °C for ≥ 60 s) · any RECOVERY row stale/divergent/failed/never |
+| warn | CPU package ≥ 80 °C · battery temp ≥ 45 °C · `cpu.throttle.recent` · cooling saturated (fan ≥ 95 % of max **and** package ≥ 80 °C for ≥ 60 s) · a backup row stale/failed/never, or the UPower check divergent |
 | critical | CPU package ≥ 95 °C · battery ≤ 10 %, discharging, and a `block` sleep inhibitor held |
 
 **Popup** (click, or `omarchy-shell techno.hwmon open`; ←/→ switch pages):
 
 - **Hardware** — sleep-blocked banner (`who — why`), BATTERY (health may
-  exceed 100 %, never clamped), FAN (actual · target, `Control: SMC auto |
+  exceed 100 %, never clamped; the **UPower check** row compares UPower's
+  reading with the kernel's — see the table), FAN (actual · target, `Control: SMC auto |
   mbpfan | manual`), CPU (package, cores, throttle), SMC SENSORS (N VALID),
   `Invalid sensors: 7 (TH0C, …)`.
-- **System** — LOAD, PER CORE, MEMORY, DISK, NETWORK, **RECOVERY**:
+- **System** — LOAD, PER CORE, MEMORY, DISK, NETWORK, **BACKUPS** (Home
+  snapshots, NAS backup). The recovery rows, wherever they sit:
 
 | row | text | state | bar |
 |---|---|---|---|
@@ -110,7 +112,7 @@ snapshot is missing or > 5 s old.
 ```
 hwmon                       # Battery / AC / Fan / CPU / SMC sensors / System
 hwmon --json | jq .schema   # 4 on this branch (3 for v1.2.0)
-hwmon --json | jq .recovery # the RECOVERY rows as data
+hwmon --json | jq .recovery # the backup rows + UPower check as data
 hwmon history               # six headline metrics, last 60 min, sparklines
 hwmon history cpu_package_c --minutes 240
 hwmon peaks                 # e.g. cpu_package_c: last_24h=92.0  all_time=99.0

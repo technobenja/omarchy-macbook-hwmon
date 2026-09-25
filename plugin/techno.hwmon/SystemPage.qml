@@ -4,7 +4,7 @@ import qs.Ui
 import "Format.js" as Format
 
 // Page 2 (A7): high-level view — load average, per-core usage + frequency,
-// RAM / swap, disk and network throughput, recovery checks (v4, +NAS backup v5).
+// RAM / swap, disk and network throughput, backups (v4; v7: UPower check lives on the Hardware page).
 Column {
   id: page
 
@@ -141,9 +141,9 @@ Column {
 
   PanelSeparator { foreground: page.foreground }
 
-  // ---------- Recovery (v4) ----------
+  // ---------- Backups (v4; v7: UPower check moved to Hardware > Battery) ----------
   PanelSectionHeader {
-    text: "RECOVERY"
+    text: "BACKUPS"
     foreground: page.foreground
     fontFamily: page.fontFamily
   }
@@ -151,11 +151,6 @@ Column {
   StatRow {
     width: parent.width; label: "Home snapshots"
     value: Format.homeSnapshots(page.snapshot)
-    foreground: page.foreground; fontFamily: page.fontFamily
-  }
-  StatRow {
-    width: parent.width; label: "UPower check"
-    value: Format.upowerCheck(page.snapshot)
     foreground: page.foreground; fontFamily: page.fontFamily
   }
   StatRow {
