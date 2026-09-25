@@ -20,7 +20,9 @@ pre-committed live acceptance. 474 Python tests + 660 widget tests.
   as "could not check" before the first snapshot exists.
 - **Wording**: "agrees · UPower x % / battery y %" names its numbers; NAS
   `never` reads "configured, never completed"; NAS `unknown` reads "couldn't
-  check (not a backup failure)".
+  check (not a backup failure)"; the row label is now "UPower check" (the
+  longer value had squeezed "UPower vs battery" to "UPower vs ba…", caught in
+  the live screenshot).
 - **RUNBOOK.md**: install/update, every widget state, CLI, events, fan,
   troubleshooting. README: model year corrected to Mid 2014.
 
