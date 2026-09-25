@@ -1124,3 +1124,81 @@ Not exercised live: same caveats as the base v5 delta above — no real
 status file exists yet on this machine, and the job agent's promised
 `samples-v2/` fixtures had not appeared in the scratch directory by the
 time this amendment was finished (checked; none to run).
+
+---
+
+# v6 — release 1.3.0 (DRAFT, 2026-09-25) · delta
+
+**What ships:** branch `nas-backup` (`fddcd3e` v5 + `84903fd` v5 amendment + `45e0ab3` RUNBOOK.md), plus the release edits below. **Nothing new is built;** this delta covers release, deploy and live acceptance only. Owner decision (2026-09-25): "start v1.3.0 spec with the experts and advisor".
+
+**Measured before the release (2026-09-25):** installed v1.2.0, live snapshot `schema 3`; the backup status file exists (`result=skipped`, `last_attempt_result=ok`: the timer ran and a backup was not due); `/home` snapper has snapshots (hourly since 2026-09-24 19:00); `node plugin/js_tests.mjs` 660/0, Python 474 OK on the branch.
+
+## ADDED
+
+**R1 — Version 1.3.0 in the three places that must agree** (`hwmon/__init__.py`, `plugin/techno.hwmon/manifest.json`, `CHANGELOG.md` with a `## 1.3.0` section folding v5 + amendment + RUNBOOK).
+
+**R2 — README corrections (public).** Model year: the owner says **13-inch Retina, Mid 2014** (README line 3 "a 2013 MacBook Pro", line 54 "Late 2013" are wrong). Contract `schema 3` → `4` (README.md:148, plugin/README.md:8). Status block → v1.3.0. Link RUNBOOK.md. Mention the optional companion `omarchy-laptop-recovery` as "coming" (not yet public).
+
+**R3 — Deploy order across a schema bump** (lesson 2026-09-24: the widget accepts exactly one schema). Merge `nas-backup` → `master` (fast-forward), then `/hwmon-update`: both suites → `install.sh` (restarts the collector, waits ≤ 10 s for schema 4, then stages the plugin) → `omarchy restart shell` (hot-reload keeps cached popup QML).
+- **WHEN** install.sh's schema wait fails **THEN** the machine is half-upgraded (new collector, old widget = "hwmon —"): roll back with `git checkout v1.2.0 && ./install.sh && omarchy restart shell` and stop.
+
+## Acceptance (live, each with its must-fail control, pre-committed before the deploy)
+
+| # | check | expected (live) | control that must go red / the other way |
+|---|---|---|---|
+| A1 | `omarchy-shell techno.hwmon state` from the NEW shell pid | `stale:false`, `age_s` < 2 | stop the collector 6 s → `stale:true`, `hwmon —`; recovers ≤ 3 s |
+| A2 | `hwmon --json` | `schema 4`; `recovery.nas_backup.state == "fresh"`, `age_s` ≈ now − last_ok_ts; `home_snapshot_state == "fresh"` | (tests only) back-dated 73 h → `stale` → bar warns; decided in review whether a live control is worth touching the real status file |
+| A3 | popup System page screenshot | RECOVERY shows three rows: Home snapshots (age), UPower vs battery (agrees · x % vs y %), NAS backup (age); nothing truncated | — |
+| A4 | journal since deploy | no QML warnings naming techno.hwmon; no per-second spam | the plugin must answer IPC (a fresh shell logs no load line) |
+| A5 | per-tick cost | collector CPU over ≥ 90 s ≈ v1.2.0's ~0.9 % of a core | — |
+| A6 | installed == repo | `diff -r` package + plugin | — |
+| A7 | public scrub before GitHub | scrub regex prints nothing | a planted lab-hostname line, piped in, matches |
+
+## Out of scope
+The kit's public release (`omarchy-laptop-recovery`) is a separate step. No widget for the escrow drill or the quarterly prune. No live backstop firing test (tests only, as in v4).
+
+## v6 advisor amendments — 2026-09-25 (APPROVE-WITH-CHANGES)
+
+Advisor (Fable, `system-architect`), weighing a UX review and a monitoring
+review. **Owner decisions folded in:** the four RECOVERY strings shipped as
+`8261e84` (Format.js + js_tests.mjs + RUNBOOK table, both suites green), and
+the live A2 stale control is DROPPED. Staleness stays covered by
+`tests/test_nas_backup.py` (72 h fresh / 73 h stale); dropping it was right, since
+the proposed command would not even parse (`--state-dir`/`--db` must precede
+`daemon`), and without isolation it would have written the real DB and read the
+real ARMED backstop config. Nothing else parses those strings (`stateJson` =
+`{label, stale, age_s}`; the CLI never prints `recovery`; `Thresholds.js` keys on
+state enums).
+
+**R2 (added):** `RUNBOOK.md` lines 5–6 → "released as 1.3.0 (schema 4)". README
+"Layout" block: spec v2–v6, schema 4, current test counts; the "System" bullet
+gains RECOVERY. Commit this spec BEFORE the merge.
+
+**R3 (amended order):** commit spec → `git merge --ff-only nas-backup` on master
+→ both suites → `./install.sh` (it restarts the collector itself) → **post-copy
+gate** → `omarchy restart shell` → A1–A7 → tag/push/release. Rollback:
+`git checkout v1.2.0 && ./install.sh && omarchy restart shell`, then
+`git checkout master`. It is DB-safe: 1.3.0 has no migration and `store.py` is unchanged.
+The release notes are scrubbed with the same regex before `gh release create`.
+
+Post-copy gate (between install.sh and the shell restart):
+`diff -r ~/dev/hwmon/plugin/techno.hwmon ~/.config/omarchy/plugins/techno.hwmon && grep -q 'nasBackup(' ~/.config/omarchy/plugins/techno.hwmon/Format.js && echo staged=ok`
+Must-fail proof, observed 2026-09-25 pre-deploy: three files differ and the gate fails.
+
+## Acceptance (v6, final) — thresholds pre-committed
+
+| # | check | expected (live) | control that must go red / the other way |
+|---|---|---|---|
+| A1 | `omarchy-shell techno.hwmon state` | `stale:false`, `age_s` < 2 | stop the collector 6 s → `stale:true`, `hwmon —`; recovers ≤ 3 s |
+| A2 | `hwmon --json` | `schema 4`; `recovery.nas_backup.state == "fresh"`, `age_s` ≈ now − `last_ok_ts`; `home_snapshot_state == "fresh"`; `upower.state == "ok"` | tests only: 73 h → `stale`, 72 h → `fresh` |
+| A3 | popup System page screenshot | three RECOVERY rows; the UPower value (the longest string now) is not elided | look-at-it step, not a gate; record the screenshot path |
+| A4 | shell load + journal | `pgrep -x quickshell` PID differs from the pre-restart PID AND A1 answers from it; then no QML warning naming the plugin, no per-second spam | a clean log with an unchanged PID or no IPC answer is a FAIL |
+| A5 | per-tick cost | `/proc/<pid>/stat` utime+stime delta over ≥ 300 s ≤ **1.2 %** of one core (v1.2.0: 0.94 %); `VmRSS` ≤ **40 MB** read ≥ 90 s after restart (v1.2.0: 21.5 MB) | not `VmHWM` (43 MB on v1.2.0), not systemd `MemoryCurrent` |
+| A6 | installed == repo | `diff -r` package (`-x __pycache__`) and plugin, both empty | the same diff fails pre-deploy |
+| A7 | public scrub, tree AND release-notes file | prints nothing | a planted lab-hostname line, piped in, matches |
+
+Version 1.3.0 in three places; the `/hwmon-update` §4 version check must print two
+identical versions. Out of hwmon's repo (not this release): `hwmon-update.md` §3
+still says "load line must be present" (contradicts the fresh-shell fact); fix it
+in `claude-agents`. LATER (UX): per-row colour for RECOVERY values; a backstop
+status row; friendlier text for the job's reason codes.
