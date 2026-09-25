@@ -1,6 +1,6 @@
 # hwmon
 
-Hardware telemetry for **omarchy**, a 2013 MacBook Pro 11,1 running Arch
+Hardware telemetry for **omarchy**, a 13-inch MacBook Pro 11,1 (Retina, Mid 2014) running Arch
 Linux + Omarchy. It adds a compact reading to the omarchy-shell bar, next to
 the battery, and provides an `hwmon` command for the terminal.
 
@@ -8,12 +8,12 @@ It was built for a machine that has just had a new iFixit battery and fan
 fitted: it keeps the low-level health numbers (fan, SMC temperatures, battery
 power and wear) one glance away, and keeps a history.
 
-> **Status (2026-09-24): v1.2.0 installed and running on omarchy.** Adds
-> hard-power-loss protection: a critical-battery journal marker, an optional
-> hibernate backstop (off unless configured), a UPower-vs-kernel battery
-> check, post-crash triage and a home-snapshot age check; the popup's System
-> page gains a RECOVERY section. 425 Python + 615 widget tests; verified live —
-> see the spec's *v4 AS EXECUTED — deploy* note and [`CHANGELOG.md`](CHANGELOG.md).
+> **Status (2026-09-25): v1.3.0 installed and running on omarchy.** Adds a
+> **NAS backup** row (freshness of the companion backup job's status file:
+> fresh / stale / failed / never / not set up), a "configured, none yet" state
+> for home snapshots, clearer RECOVERY wording, and an operator
+> [`RUNBOOK.md`](RUNBOOK.md). Snapshot schema 4. 474 Python + 660 widget tests;
+> verified live — see the spec's *v6 AS EXECUTED* note and [`CHANGELOG.md`](CHANGELOG.md).
 
 ## What it shows
 
@@ -29,7 +29,8 @@ to `hwmon —` instead of showing an old number as current.
   label. Sensors the SMC reports as absent (`-127 °C` and similar) are counted,
   not hidden.
 - **System** — load, per-core usage and frequency, RAM/swap, SSD read/write,
-  network throughput.
+  network throughput, and **RECOVERY**: home snapshots, UPower vs battery, NAS
+  backup (see [`RUNBOOK.md`](RUNBOOK.md) for every state).
 
 ## How it works
 
@@ -51,8 +52,8 @@ to `hwmon —` instead of showing an old number as current.
 
 **Requirements:** [Omarchy](https://omarchy.org/) (the omarchy-shell bar), a
 Mac with the `applesmc` kernel module loaded, Python 3 (standard library
-only), `systemd --user`. Built and tested on a MacBook Pro 11,1 (Late 2013,
-13"); other `applesmc` Macs may work but are untested.
+only), `systemd --user`. Built and tested on a MacBook Pro 11,1 (13-inch Retina,
+Mid 2014); other `applesmc` Macs may work but are untested.
 
 ```bash
 git clone https://github.com/technobenja/omarchy-macbook-hwmon.git ~/dev/hwmon
@@ -144,11 +145,11 @@ work but are untested.
 ## Layout
 
 ```
-specs/spec.md                      the spec (v2, + v3 delta/amendment) — the source of truth
-tests/fixtures/latest.example.json the collector ↔ widget contract (schema 3)
+specs/spec.md                      the spec (v2 → v6 deltas + AS EXECUTED) — the source of truth
+tests/fixtures/latest.example.json the collector ↔ widget contract (schema 4)
 tests/fixtures/poweroff_2026-09-23/ real captured data for the events classifier (acceptance 13)
 hwmon/                             collector + CLI
-tests/                             stdlib unittest suite (201 tests) + sysfs/procfs fixture builders
+tests/                             stdlib unittest suite (474 tests) + sysfs/procfs fixture builders
 plugin/techno.hwmon/               omarchy-shell bar widget
 systemd/hwmon.service              user service (built)
 install.sh                         install / uninstall

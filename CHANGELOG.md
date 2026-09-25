@@ -4,6 +4,26 @@ Semver. The version lives in three places that must agree:
 `hwmon/__init__.py` (`__version__`), `plugin/techno.hwmon/manifest.json`
 (`version`), and this file.
 
+## 1.3.0 — 2026-09-25
+
+NAS-backup freshness and clearer recovery wording (spec v5, v5 amendment, v6).
+Specialist reviews (UX, monitoring) and a Fable advisor APPROVE-WITH-CHANGES;
+pre-committed live acceptance. 474 Python tests + 660 widget tests.
+
+- **Snapshot schema 3 → 4**: `recovery.nas_backup = {state, age_s, reason}`,
+  read (at most once per 60 s, never the network or a mount) from the
+  companion backup job's status file. States: `fresh` (≤ 72 h), `stale`,
+  `failed` (from the last non-skipped attempt, so a failure survives later
+  skipped runs), `never`, `not_configured`, `unknown`. The bar warns on
+  stale, failed and never.
+- **Home snapshots** gain `empty` ("configured, none yet") instead of reading
+  as "could not check" before the first snapshot exists.
+- **Wording**: "agrees · UPower x % / battery y %" names its numbers; NAS
+  `never` reads "configured, never completed"; NAS `unknown` reads "couldn't
+  check (not a backup failure)".
+- **RUNBOOK.md**: install/update, every widget state, CLI, events, fan,
+  troubleshooting. README: model year corrected to Mid 2014.
+
 ## 1.2.0 — 2026-09-24
 
 Recovery v4: the hwmon half of the omarchy hard-power-loss recovery spec

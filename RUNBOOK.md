@@ -1,9 +1,8 @@
 # hwmon — operator runbook
 
 Hardware telemetry collector + omarchy-shell bar widget for a MacBook Pro
-11,1 (13-inch Retina, Mid 2014) running Arch Linux + Omarchy. Written for
-the current branch (`nas-backup`, snapshot **schema 4**, not yet released);
-the last released version is 1.2.0 (schema 3). Design detail lives in
+11,1 (13-inch Retina, Mid 2014) running Arch Linux + Omarchy. Released as
+**1.3.0** (snapshot **schema 4**). Design detail lives in
 [`specs/spec.md`](specs/spec.md); this file is what to type and what to expect.
 
 Two halves, always shipped together: the collector (`hwmon.service`, a
